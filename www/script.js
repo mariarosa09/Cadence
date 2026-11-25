@@ -250,7 +250,7 @@ window.CadenceStore.ready.then(() => {
   function emptyState(ic, title, text, action = '') {
     return `<div class="empty"><div class="empty-art">${icon(ic)}</div><h4>${esc(title)}</h4><p class="small">${esc(text)}</p>${action ? `<div style="margin-top:12px">${action}</div>` : ''}</div>`;
   }
-  const sw = (attrs, checked) => `<label class="switch"><input type="checkbox" ${attrs} ${checked ? 'checked' : ''}><span class="track"></span></label>`;
+  const sw = (attrs, checked) => `<label class="switch"><input type="checkbox" ${attrs} ${checked ? 'checked' : ''}><span class="sw-track"></span></label>`;
 
   /* ============ 4. Tasks model ============ */
   const CAT_COLORS = { Work: '#7A5BE6', Study: '#4F7FD9', Personal: '#E0884A', Health: '#3FA07A', Errands: '#C46BD6', Other: '#8A8399' };
@@ -1202,6 +1202,7 @@ window.CadenceStore.ready.then(() => {
     $('#summaryRow').innerHTML = [
       ['Focus today', fmtDur(fm), `/ ${S.settings.goals.dailyFocusMin}m`], ['Sessions', sessionsBetween(sod, sod + DAY), ''], ['Tasks done', doneToday, `/ ${doneToday + todays.length}`], ['Streak', streak(), streak() === 1 ? 'day' : 'days'],
     ].map(([l, v, s]) => `<div class="summary-tile"><div class="label">${l}</div><div class="value">${v}<small>${s}</small></div></div>`).join('');
+    $('#homePerm').innerHTML = permissionCardHTML();
     renderActiveCard();
     const grid = $('#widgetGrid'); grid.classList.toggle('editing', ui.editingWidgets);
     $('#customizeBtn').innerHTML = ui.editingWidgets ? `${icon('i-check')}Done` : `${icon('i-sliders')}Customize`;
@@ -1281,6 +1282,7 @@ window.CadenceStore.ready.then(() => {
   }
 
   /* --- calendar --- */
+  const CAL_HOUR = 42; // px per hour in week/day view (matches .tg-hour in style.css)
   function calEventsForDay(day) {
     const a = startOfDay(day).getTime(), b = a + DAY;
     return S.tasks.filter((t) => isScheduled(t) && tms(t.start) < b && tms(t.end) > a).sort((x, y) => tms(x.start) - tms(y.start));
@@ -1289,26 +1291,27 @@ window.CadenceStore.ready.then(() => {
   function renderCalendar() {
     const v = S.ui.calView; const cur = ui.calCursor;
     $$('#calViews button').forEach((b) => b.setAttribute('aria-selected', b.dataset.cview === v));
-    const cats = Array.from(new Set(S.tasks.map((t) => t.category)));
-    $('#calLegend').innerHTML = cats.map((c) => `<span><i style="background:${catColor(c)}"></i>${esc(c)}</span>`).join('') +
-      `<span><i style="background:transparent;border-left:4px solid ${PRI_COLOR.high}"></i>High</span><span><i style="background:transparent;border-left:4px solid ${PRI_COLOR.medium}"></i>Medium</span><span><i style="background:transparent;border-left:4px solid ${PRI_COLOR.low}"></i>Low priority</span><span><i style="border:1.5px dashed var(--danger)"></i>Deadline</span>`;
+    $('#calTitle').classList.toggle('off-today', v === 'month' ? (cur.getMonth() !== new Date().getMonth() || cur.getFullYear() !== new Date().getFullYear()) : dayKey(v === 'week' ? weekStartOf(cur) : cur) !== dayKey(v === 'week' ? weekStartOf(new Date()) : new Date()));
     if (v === 'month') {
       $('#calTitle').textContent = cur.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
       const first = new Date(cur.getFullYear(), cur.getMonth(), 1); const start = weekStartOf(first);
-      let html = '<div class="month-grid">' + Array.from({ length: 7 }, (_, i) => `<div class="month-dow">${addDays(start, i).toLocaleDateString(undefined, { weekday: 'short' })}</div>`).join('');
-      for (let i = 0; i < 42; i++) {
+      // Only as many weeks as the month needs (5 or 6 rows) keeps the grid compact.
+      const last = new Date(cur.getFullYear(), cur.getMonth() + 1, 0);
+      const cellsN = Math.ceil((Math.round((startOfDay(last) - start) / DAY) + 1) / 7) * 7;
+      let html = '<div class="month-grid">' + Array.from({ length: 7 }, (_, i) => `<div class="month-dow">${addDays(start, i).toLocaleDateString(undefined, { weekday: 'narrow' })}</div>`).join('');
+      for (let i = 0; i < cellsN; i++) {
         const d = addDays(start, i); const k = dayKey(d); const evs = calEventsForDay(d); const dls = calDeadlinesForDay(d);
         const items = evs.map((t) => `<span class="ev ${t.status === 'completed' ? 'done' : ''}" style="background:${catColor(t.category)}" title="${esc(t.title)}"></span>`)
           .concat(dls.map((t) => `<span class="ev deadline" title="Due: ${esc(t.title)}"></span>`));
         html += `<button class="month-cell ${d.getMonth() !== cur.getMonth() ? 'other' : ''} ${k === dayKey(new Date()) ? 'today' : ''} ${k === ui.calSelected ? 'selected' : ''}" data-action="calSelect" data-id="${k}" aria-label="${fmtDay(d, { weekday: 'long', month: 'long', day: 'numeric' })}: ${evs.length} scheduled, ${dls.length} deadlines">
-          <span class="d">${d.getDate()}</span><span class="evs">${items.slice(0, 4).join('')}</span>${items.length > 4 ? `<span class="more">+${items.length - 4}</span>` : ''}</button>`;
+          <span class="d">${d.getDate()}</span><span class="evs">${items.slice(0, 3).join('')}</span></button>`;
       }
       $('#calBody').innerHTML = html + '</div>';
     } else {
       const days = v === 'week' ? Array.from({ length: 7 }, (_, i) => addDays(weekStartOf(cur), i)) : [startOfDay(cur)];
-      $('#calTitle').textContent = v === 'week' ? `${fmtDay(days[0], { month: 'short', day: 'numeric' })} – ${fmtDay(days[6], { month: 'short', day: 'numeric', year: 'numeric' })}` : fmtDay(cur, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+      $('#calTitle').textContent = v === 'week' ? `${fmtDay(days[0], { month: 'short', day: 'numeric' })} – ${fmtDay(days[6], { month: 'short', day: 'numeric' })}` : fmtDay(cur, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
       const cols = `40px repeat(${days.length}, minmax(${v === 'week' ? 44 : 0}px, 1fr))`;
-      const HH = 48; const nowD = new Date();
+      const HH = CAL_HOUR; const nowD = new Date();
       let head = `<div class="timegrid-head" style="grid-template-columns:${cols}"><div></div>${days.map((d) => `<button class="tg-dayhead ${dayKey(d) === dayKey(nowD) ? 'today' : ''}" data-action="calDayView" data-id="${dayKey(d)}">${d.toLocaleDateString(undefined, { weekday: 'short' })}<b>${d.getDate()}</b></button>`).join('')}
         <div class="tg-deadlines" style="grid-template-columns:${cols}"><div class="tiny muted" style="border:0;justify-content:center;align-items:flex-end;padding-right:6px">due</div>${days.map((d) => `<div>${calDeadlinesForDay(d).map((t) => `<button class="tg-dl" data-action="editTask" data-id="${t.id}">⚑ ${esc(fmtTime(t.due))} ${esc(t.title)}</button>`).join('')}</div>`).join('')}</div></div>`;
       let body = `<div class="tg-scroll" id="tgScroll"><div class="tg-body" style="grid-template-columns:${cols}"><div class="tg-hours">${Array.from({ length: 24 }, (_, h) => `<div class="tg-hour">${h ? fmtTime(new Date(2000, 0, 1, h)).replace(':00', '') : ''}</div>`).join('')}</div>`;
@@ -1326,12 +1329,12 @@ window.CadenceStore.ready.then(() => {
         const isToday = dayKey(d) === dayKey(nowD);
         body += `<div class="tg-col ${isToday ? 'today' : ''}" data-day="${dayKey(d)}" style="height:${24 * HH}px">
           ${placed.map((x) => { const top = ((x.s - a) / HOUR) * HH; const h = Math.max(20, ((x.e - x.s) / HOUR) * HH - 2); const w = 100 / x.cols;
-            return `<button class="tg-ev ${x.t.status === 'completed' ? 'done' : ''} ${x.cols > 1 ? 'overlap' : ''}" data-action="editTask" data-id="${x.t.id}" style="top:${top}px;height:${h}px;left:calc(${x.col * w}% + 2px);width:calc(${w}% - 4px);background:${catColor(x.t.category)};border-left:4px solid ${PRI_COLOR[x.t.priority]}" title="${esc(x.t.title)} · ${esc(fmtRange(x.t.start, x.t.end))}${x.cols > 1 ? ' · overlaps another task' : ''}"><b>${esc(x.t.title)}</b>${h > 30 ? `${esc(fmtTime(x.t.start))} – ${esc(fmtTime(x.t.end))}` : ''}</button>`; }).join('')}
+            return `<button class="tg-ev ${x.t.status === 'completed' ? 'done' : ''} ${x.cols > 1 ? 'overlap' : ''}" data-action="editTask" data-id="${x.t.id}" style="top:${top}px;height:${h}px;left:calc(${x.col * w}% + 2px);width:calc(${w}% - 4px);background:${catColor(x.t.category)};border-left:4px solid ${PRI_COLOR[x.t.priority]}" title="${esc(x.t.title)} · ${esc(fmtRange(x.t.start, x.t.end))}${x.cols > 1 ? ' · overlaps another task' : ''}"><b>${esc(x.t.title)}</b>${h > 30 ? `<span class="tm">${esc(fmtTime(x.t.start))} – ${esc(fmtTime(x.t.end))}</span>` : ''}</button>`; }).join('')}
           ${isToday ? `<div class="tg-now" style="top:${((Date.now() - a) / HOUR) * HH}px"></div>` : ''}</div>`;
       });
       body += '</div></div>';
-      $('#calBody').innerHTML = `<div class="timegrid">${head}${body}</div>`;
-      const sc = $('#tgScroll'); if (sc) sc.scrollTop = (ui.calScrollTop != null ? ui.calScrollTop : 7 * HH);
+      $('#calBody').innerHTML = `<div class="timegrid ${v}">${head}${body}</div>`;
+      const sc = $('#tgScroll'); if (sc) sc.scrollTop = (ui.calScrollTop != null ? ui.calScrollTop : Math.max(0, (new Date().getHours() - 1)) * HH);
       sc.addEventListener('scroll', () => (ui.calScrollTop = sc.scrollTop));
     }
     // agenda for selected date
@@ -1343,7 +1346,7 @@ window.CadenceStore.ready.then(() => {
   // click empty slot in time grid → create task
   document.addEventListener('click', (e) => {
     const col = e.target.closest('.tg-col'); if (!col || e.target.closest('.tg-ev')) return;
-    const rect = col.getBoundingClientRect(); const y = e.clientY - rect.top; const mins = Math.floor((y / 48) * 2) * 30;
+    const rect = col.getBoundingClientRect(); const y = e.clientY - rect.top; const mins = Math.floor((y / CAL_HOUR) * 2) * 30;
     const d = new Date(col.dataset.day + 'T00:00'); d.setMinutes(clamp(mins, 0, 23 * 60 + 30));
     ui.calSelected = col.dataset.day;
     openTaskForm(null, { start: toLocalInput(d), end: toLocalInput(d.getTime() + HOUR), estimate: 60 });
@@ -1736,6 +1739,7 @@ window.CadenceStore.ready.then(() => {
     const dark = t === 'dark' || (t === 'system' && darkMQ && darkMQ.matches);
     document.documentElement.dataset.theme = dark ? 'dark' : 'light';
     const m = $('meta[name="theme-color"]'); if (m) m.content = dark ? '#110E19' : '#F6F3FC';
+    Device.setAppearance(dark, dark ? '#110E19' : '#F6F3FC');
     if (ui.screen === 'insights') renderCharts();
   }
   if (darkMQ) { if (darkMQ.addEventListener) darkMQ.addEventListener('change', applyTheme); else if (darkMQ.addListener) darkMQ.addListener(applyTheme); }
@@ -1872,7 +1876,7 @@ window.CadenceStore.ready.then(() => {
     ui.calCursor = v === 'month' ? new Date(c.getFullYear(), c.getMonth() + dir, 1) : addDays(c, dir * (v === 'week' ? 7 : 1));
     if (v !== 'month') ui.calSelected = dayKey(v === 'day' ? ui.calCursor : weekStartOf(ui.calCursor)); renderCalendar(); };
   $('#calPrev').onclick = () => calShift(-1); $('#calNext').onclick = () => calShift(1);
-  $('#calToday').onclick = () => { ui.calCursor = new Date(); ui.calSelected = dayKey(new Date()); renderCalendar(); };
+  $('#calTitle').onclick = () => { ui.calCursor = new Date(); ui.calSelected = dayKey(new Date()); renderCalendar(); };
   $('#statRange').addEventListener('click', (e) => { const b = e.target.closest('[data-range]'); if (!b) return; ui.statRange = b.dataset.range; renderInsights(); });
 
   // widget drag & drop (desktop) — arrows provide the accessible alternative
@@ -1969,7 +1973,7 @@ window.CadenceStore.ready.then(() => {
     scheduleSync(true);
   }
   Device.onActions(() => drainActions());
-  Device.onResume(() => { drainActions(); refreshDeviceStatus().then(() => { if (['settings', 'focus'].includes(ui.screen)) renderAll(); }); });
+  Device.onResume(() => { drainActions(); refreshDeviceStatus().then(() => { if (['settings', 'focus', 'home'].includes(ui.screen)) renderAll(); }); });
   Device.onPause(() => { flush(); scheduleSync(true); });
 
   /* ============ Main loop (timestamp based) ============ */
@@ -2013,7 +2017,8 @@ window.CadenceStore.ready.then(() => {
     if (!Store.get(NS + 'seen')) {
       Store.set(NS + 'seen', '1');
       setTimeout(() => toast('Welcome to Cadence', 'Add a task, then press Focus to start your first session. Everything stays on this device.', 'ok', { timeout: 7000 }), 600);
-      if (Device.isNative && notifPerm() === 'prompt') setTimeout(() => askNotifPermission(true), 1800);
     }
+    // Reminders, timers and screen breaks can only reach you outside the app with notifications on.
+    if (Device.isNative && notifPerm() === 'prompt') setTimeout(() => askNotifPermission(true), 1500);
   })();
 });

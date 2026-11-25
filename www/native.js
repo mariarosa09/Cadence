@@ -8,7 +8,13 @@
 
   const Cap = window.Capacitor;
   const isNative = !!(Cap && typeof Cap.isNativePlatform === 'function' && Cap.isNativePlatform());
-  const plugin = (name) => (isNative && typeof Cap.registerPlugin === 'function' ? Cap.registerPlugin(name) : null);
+  // The native bridge exposes every registered plugin on Capacitor.Plugins (registerPlugin only
+  // exists when @capacitor/core is bundled, which this app does not do).
+  const plugin = (name) => {
+    if (!isNative) return null;
+    if (Cap.Plugins && Cap.Plugins[name]) return Cap.Plugins[name];
+    return typeof Cap.registerPlugin === 'function' ? Cap.registerPlugin(name) : null;
+  };
   const Preferences = plugin('Preferences');
   const App = plugin('App');
   const Native = plugin('CadenceNative');
@@ -66,7 +72,8 @@
 
   /* ---------- native bridge ---------- */
   const OFF = { notifications: 'unavailable', exactAlarms: true, dndAccess: false, dndActive: false };
-  const quiet = (p, fallback) => Promise.resolve(p).catch((e) => { console.warn('[Cadence]', e); return fallback; });
+  // Bridge calls never throw into the app: failures are logged and resolve to a fallback.
+  const quiet = (p, fallback) => { try { return Promise.resolve(typeof p === 'function' ? p() : p).catch((e) => { console.warn('[Cadence]', e); return fallback; }); } catch (e) { console.warn('[Cadence]', e); return Promise.resolve(fallback); } };
 
   const device = {
     isNative,
@@ -77,6 +84,7 @@
     status: () => (Native ? quiet(Native.status(), OFF) : Promise.resolve(OFF)),
     requestNotifications: () => (Native ? quiet(Native.requestNotifications(), OFF) : Promise.resolve(OFF)),
     openSettings: (which) => (Native ? quiet(Native.openSettings({ which })) : Promise.resolve()),
+    setAppearance: (dark, color) => (Native ? quiet(() => Native.setAppearance({ dark, color })) : Promise.resolve()),
     shareFile: (filename, text, mimeType = 'application/json') => (Native ? Native.shareFile({ filename, text, mimeType }) : Promise.reject(new Error('Not available'))),
     onActions: (fn) => { if (Native) Native.addListener('actions', fn); },
     onBack: (fn) => { if (App) App.addListener('backButton', fn); },

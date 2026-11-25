@@ -71,11 +71,11 @@
   <div class="app" id="app">
     <!-- Navigation: bottom bar on mobile, sidebar on desktop -->
     <nav class="nav" id="nav" aria-label="Main navigation">
-      <button class="nav-item" data-screen="home" aria-label="Home"><svg><use href="#i-home"/></svg><span>Home</span></button>
-      <button class="nav-item" data-screen="tasks" aria-label="Tasks"><svg><use href="#i-tasks"/></svg><span>Tasks</span></button>
-      <button class="nav-item" data-screen="calendar" aria-label="Calendar"><svg><use href="#i-cal"/></svg><span>Calendar</span></button>
-      <button class="nav-item" data-screen="focus" aria-label="Focus"><svg><use href="#i-focus"/></svg><span>Focus</span></button>
-      <button class="nav-item" data-screen="settings" aria-label="Settings"><svg><use href="#i-settings"/></svg><span>Settings</span></button>
+      <button class="nav-item" data-screen="home" aria-label="Home"><span class="nav-pill"><svg><use href="#i-home"/></svg></span><span>Home</span></button>
+      <button class="nav-item" data-screen="tasks" aria-label="Tasks"><span class="nav-pill"><svg><use href="#i-tasks"/></svg></span><span>Tasks</span></button>
+      <button class="nav-item" data-screen="calendar" aria-label="Calendar"><span class="nav-pill"><svg><use href="#i-cal"/></svg></span><span>Calendar</span></button>
+      <button class="nav-item" data-screen="focus" aria-label="Focus"><span class="nav-pill"><svg><use href="#i-focus"/></svg></span><span>Focus</span></button>
+      <button class="nav-item" data-screen="settings" aria-label="Settings"><span class="nav-pill"><svg><use href="#i-settings"/></svg></span><span>Settings</span></button>
     </nav>
 
     <main class="main" id="main">
@@ -105,6 +105,7 @@
             <button class="btn btn-soft" id="qaCalendar"><svg><use href="#i-cal"/></svg>Calendar</button>
           </div>
         </div>
+        <div id="homePerm"></div>
         <div class="summary-row" id="summaryRow"></div>
         <div class="active-card" id="activeCard"></div>
         <div class="widgets-head">
@@ -144,21 +145,21 @@
 
       <!-- CALENDAR -->
       <section class="screen" id="screen-calendar" data-title="Calendar" hidden>
-        <div class="cal-toolbar">
-          <div class="cal-nav">
-            <button class="icon-btn" id="calPrev" aria-label="Previous"><svg><use href="#i-left"/></svg></button>
-            <button class="btn btn-ghost btn-sm" id="calToday">Today</button>
-            <button class="icon-btn" id="calNext" aria-label="Next"><svg><use href="#i-right"/></svg></button>
-            <h2 class="cal-title" id="calTitle"></h2>
+        <div class="cal-card">
+          <div class="cal-toolbar">
+            <div class="cal-nav">
+              <button class="cal-arrow" id="calPrev" aria-label="Previous"><svg><use href="#i-left"/></svg></button>
+              <button class="cal-title" id="calTitle" aria-label="Go to today"></button>
+              <button class="cal-arrow" id="calNext" aria-label="Next"><svg><use href="#i-right"/></svg></button>
+            </div>
+            <div class="cal-views" id="calViews" role="tablist" aria-label="Calendar view">
+              <button data-cview="month" role="tab">Month</button>
+              <button data-cview="week" role="tab">Week</button>
+              <button data-cview="day" role="tab">Day</button>
+            </div>
           </div>
-          <div class="seg seg-sm" id="calViews" role="tablist" aria-label="Calendar view">
-            <button data-cview="month" role="tab">Month</button>
-            <button data-cview="week" role="tab">Week</button>
-            <button data-cview="day" role="tab">Day</button>
-          </div>
+          <div class="cal-body" id="calBody"></div>
         </div>
-        <div class="cal-legend" id="calLegend"></div>
-        <div class="cal-body" id="calBody"></div>
         <div class="cal-agenda" id="calAgenda"></div>
       </section>
 

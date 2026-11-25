@@ -239,6 +239,7 @@ final class Controller {
         long interval = Math.max(60_000L, e.optLong("intervalMs", 20 * 60_000L));
         long next = Store.getLong(c, "eyeNextAt");
         if (next <= 0) next = now + Math.max(15_000L, interval - e.optLong("accumMs"));
+        else if (next < now - 60_000L) next = now + interval; // e.g. after a restart: start a fresh interval
         long snooze = e.optLong("snoozeUntil");
         if (next < snooze) next = snooze + interval;
         Store.putLong(c, "eyeNextAt", next);

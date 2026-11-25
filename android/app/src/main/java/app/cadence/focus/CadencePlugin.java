@@ -8,7 +8,12 @@ import android.net.Uri;
 import android.os.Build;
 import android.provider.Settings;
 
+import android.graphics.Color;
+import android.view.Window;
+
 import androidx.core.content.FileProvider;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -62,9 +67,51 @@ public class CadencePlugin extends Plugin {
         handleIntent(intent);
     }
 
+    private Boolean appearanceDark = null;
+    private int appearanceColor = 0;
+
+    /** Matches the system bar icons and the area behind the bars to the app's light/dark theme. */
+    @PluginMethod
+    public void setAppearance(PluginCall call) {
+        appearanceDark = call.getBoolean("dark", false);
+        String color = call.getString("color", appearanceDark ? "#110E19" : "#F6F3FC");
+        try { appearanceColor = Color.parseColor(color); } catch (IllegalArgumentException e) { appearanceColor = appearanceDark ? 0xFF110E19 : 0xFFF6F3FC; }
+        getBridge().executeOnMainThread(() -> {
+            applyAppearance();
+            // Window setup at startup (edge-to-edge, system bars) can reset the bar style just
+            // after this runs, so apply it once more when that has settled.
+            if (getActivity() != null) getActivity().getWindow().getDecorView().postDelayed(this::applyAppearance, 400);
+            call.resolve();
+        });
+    }
+
+    private void applyAppearance() {
+        if (appearanceDark == null || getActivity() == null) return;
+        Window w = getActivity().getWindow();
+        w.getDecorView().setBackgroundColor(appearanceColor);
+        if (getBridge().getWebView() != null) getBridge().getWebView().setBackgroundColor(appearanceColor);
+        WindowInsetsControllerCompat c = WindowCompat.getInsetsController(w, w.getDecorView());
+        c.setAppearanceLightStatusBars(!appearanceDark);
+        c.setAppearanceLightNavigationBars(!appearanceDark);
+        // Some vendor builds re-derive the bar style from the legacy flags, so keep them in step too.
+        android.view.View d = w.getDecorView();
+        int flags = d.getSystemUiVisibility();
+        int light = android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ? android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR : 0);
+        d.setSystemUiVisibility(appearanceDark ? (flags & ~light) : (flags | light));
+    }
+
+    @Override
+    protected void handleOnConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.handleOnConfigurationChanged(newConfig);
+        // The system-bars plugin resets the bars on configuration changes: re-apply the app's theme.
+        getBridge().executeOnMainThread(this::applyAppearance);
+    }
+
     @Override
     protected void handleOnResume() {
         super.handleOnResume();
+        applyAppearance();
+        if (getActivity() != null) getActivity().getWindow().getDecorView().postDelayed(this::applyAppearance, 400);
         Store.foreground = true;
         Notifier.cancel(getContext(), Notifier.ID_EYE);
         Controller.refresh(getContext());
