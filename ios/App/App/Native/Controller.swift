@@ -22,8 +22,9 @@ enum Controller {
         scheduleNotifications(snap: snap, cfg: cfg, timer: t, now: now)
         AlarmController.sync(snap: snap, cfg: cfg, timer: t, now: now)
         LiveActivityController.sync(snap: snap, cfg: cfg, timer: t)
-        let focusing = TimerEngine.phase(t) == "focus" && TimerEngine.active(t)
-        AppLock.sync(shouldLock: focusing && snap.obj("lock").bool("enabled"), endAt: TimerEngine.running(t) ? t.num("endAt") : now + 4 * 3600_000)
+        // Lock only while focus is running: pausing or ending it lifts the lock right away.
+        let focusing = TimerEngine.phase(t) == "focus" && TimerEngine.running(t)
+        AppLock.sync(shouldLock: focusing && snap.obj("lock").bool("enabled"), endAt: t.num("endAt"))
         WidgetCenter.shared.reloadAllTimelines()
     }
 

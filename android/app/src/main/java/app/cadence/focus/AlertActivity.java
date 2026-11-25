@@ -28,6 +28,8 @@ public class AlertActivity extends AppCompatActivity {
     static final String KIND_SCREEN = "screen";
 
     private CountDownTimer countdown;
+    /** When the screen break ends (epoch ms). Kept across rotation so the countdown doesn't restart. */
+    private long eyeEndAt = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -40,8 +42,15 @@ public class AlertActivity extends AppCompatActivity {
         }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setContentView(R.layout.activity_alert);
+        if (savedInstanceState != null) eyeEndAt = savedInstanceState.getLong("eyeEndAt", 0);
         bind(getIntent());
-        announce();
+        if (savedInstanceState == null) announce(); // sound and vibration only once, not on rotation
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        out.putLong("eyeEndAt", eyeEndAt);
     }
 
     private android.media.Ringtone ringtone;
@@ -79,6 +88,7 @@ public class AlertActivity extends AppCompatActivity {
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        eyeEndAt = 0; // a new alert starts a new countdown
         bind(intent);
         announce();
     }
@@ -100,7 +110,10 @@ public class AlertActivity extends AppCompatActivity {
                 title.setText(R.string.alert_screen_title);
                 body.setText(R.string.alert_screen_body);
                 big.setVisibility(View.VISIBLE);
-                countdown = new CountDownTimer(secs * 1000L, 250) {
+                if (eyeEndAt == 0) eyeEndAt = System.currentTimeMillis() + secs * 1000L;
+                long left = Math.max(0, eyeEndAt - System.currentTimeMillis());
+                big.setText(clock(left));
+                countdown = new CountDownTimer(left, 250) {
                     @Override public void onTick(long left) { big.setText(clock(left)); }
                     @Override public void onFinish() { big.setText(R.string.alert_screen_done); primary.setText(R.string.alert_done); }
                 }.start();

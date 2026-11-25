@@ -49,7 +49,8 @@ final class Controller {
 
         // DND first, so a "focus finished" alert is not silenced by our own DND.
         JSONObject dnd = snap.optJSONObject("dnd");
-        boolean wantDnd = dnd != null && dnd.optBoolean("enabled") && "focus".equals(TimerEngine.phase(t)) && TimerEngine.active(t);
+        // Only while focus is running: pausing or ending it restores the phone's previous DND mode.
+        boolean wantDnd = dnd != null && dnd.optBoolean("enabled") && "focus".equals(TimerEngine.phase(t)) && TimerEngine.running(t);
         Dnd.apply(c, wantDnd, dnd != null ? dnd.optJSONObject("allow") : null);
 
         if (!ended.isEmpty() && !Store.foreground) notifyPhaseEnded(c, snap, t, ended.get(ended.size() - 1));

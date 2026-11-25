@@ -62,6 +62,7 @@
         <!-- Full-screen alert when a session, break or screen break ends (wakes the screen) -->
         <activity
             android:name=".AlertActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
             android:excludeFromRecents="true"
             android:exported="false"
             android:launchMode="singleTop"
@@ -73,6 +74,7 @@
         <!-- Lock screen shown over apps that are not allowed during focus -->
         <activity
             android:name=".BlockActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
             android:excludeFromRecents="true"
             android:exported="false"
             android:launchMode="singleTask"

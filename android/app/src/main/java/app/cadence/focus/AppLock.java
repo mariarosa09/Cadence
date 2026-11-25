@@ -48,11 +48,11 @@ final class AppLock {
 
     static boolean canOverlay(Context c) { return Settings.canDrawOverlays(c); }
 
-    /** True while a focus phase runs and the user turned app lock on (and Android allows it). */
+    /** True while a focus phase is running (not paused) and the user turned app lock on (and Android allows it). */
     static boolean active(Context c, JSONObject snap, JSONObject timer) {
         JSONObject lock = snap.optJSONObject("lock");
         return lock != null && lock.optBoolean("enabled") && "focus".equals(TimerEngine.phase(timer))
-            && TimerEngine.active(timer) && hasUsageAccess(c) && canOverlay(c);
+            && TimerEngine.running(timer) && hasUsageAccess(c) && canOverlay(c);
     }
 
     /** Apps that are never locked: Cadence, the home screen, phone/emergency calls, system UI and Settings. */

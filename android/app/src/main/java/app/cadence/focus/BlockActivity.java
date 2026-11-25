@@ -49,6 +49,26 @@ public class BlockActivity extends AppCompatActivity {
         }
     }
 
+    private final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable watch = new Runnable() {
+        @Override public void run() {
+            if (!AppLock.active(BlockActivity.this, Store.snapshot(BlockActivity.this), Store.timer(BlockActivity.this))) { finish(); return; }
+            handler.postDelayed(this, 1000);
+        }
+    };
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        handler.post(watch);
+    }
+
+    @Override
+    protected void onPause() {
+        handler.removeCallbacks(watch);
+        super.onPause();
+    }
+
     private void goHome() {
         startActivity(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         finish();

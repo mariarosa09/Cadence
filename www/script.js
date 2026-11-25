@@ -861,7 +861,8 @@ window.CadenceStore.ready.then(() => {
   const timerTask = () => (S.timer.taskId ? getTask(S.timer.taskId) : null);
   // Focus-tab switches apply to every focus session: Focus Mode runs use their own copy.
   const focusPref = (k) => (S.focus.active ? S.focus[k] : S.settings.focusMode[k]);
-  const restrictionsActive = () => S.timer.phase === 'focus' && S.timer.status !== 'idle';
+  // DND and app lock apply only while focus is running; pausing or ending it lifts them.
+  const restrictionsActive = () => S.timer.phase === 'focus' && S.timer.status === 'running';
   // Do Not Disturb and app lock only count as on when the phone has granted the access they need.
   // iOS doesn't let apps switch Focus / Do Not Disturb, so there it's guidance instead of a switch.
   const DND_SUPPORTED = !Device.isIOS;
