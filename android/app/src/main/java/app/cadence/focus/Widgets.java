@@ -41,7 +41,17 @@ final class Widgets {
         JSONObject snap = Store.snapshot(c);
         for (int id : m.getAppWidgetIds(new ComponentName(c, TimerWidget.class))) m.updateAppWidget(id, timer(c, snap));
         for (int id : m.getAppWidgetIds(new ComponentName(c, TodayWidget.class))) m.updateAppWidget(id, today(c, snap, m.getAppWidgetOptions(id)));
+        for (BaseWidget w : MORE) {
+            for (int id : m.getAppWidgetIds(new ComponentName(c, w.getClass()))) {
+                try { m.updateAppWidget(id, MoreWidgets.render(c, w.kind(), snap, m.getAppWidgetOptions(id))); } catch (RuntimeException ignored) {}
+            }
+        }
     }
+
+    private static final BaseWidget[] MORE = {
+        new UpcomingWidget(), new DeadlinesWidget(), new ProgressWidget(), new WeeklyWidget(), new StreakWidget(),
+        new CalendarWidget(), new MusicWidget(), new ScreenBreakWidget(), new QuoteWidget(),
+    };
 
     /* ---------- focus timer widget ---------- */
 
@@ -136,7 +146,7 @@ final class Widgets {
         v.setTextViewText(R.id.t_date, new SimpleDateFormat("EEEE, MMM d", Locale.getDefault()).format(new Date(now)));
 
         JSONObject ft = today.optJSONObject("focusToday");
-        long focusMs = ft != null && todayKey.equals(ft.optString("day")) ? ft.optLong("ms") : 0;
+        long focusMs = (ft != null && todayKey.equals(ft.optString("day")) ? ft.optLong("ms") : 0) + liveFocusMs(c, snap);
         int goal = today.optInt("goalMin", 100);
         int streak = streak(today.optJSONArray("focusDays"), a);
         String stats = done + "/" + rows.size() + " tasks · " + (focusMs / 60_000L) + "/" + goal + " min focus"
@@ -182,6 +192,15 @@ final class Widgets {
         v.setOnClickPendingIntent(R.id.t_header, Notifier.openApp(c, "home", 52));
         v.setOnClickPendingIntent(R.id.t_empty, Notifier.openApp(c, "newTask", 53));
         return v;
+    }
+
+    /** Minutes of the focus session running now, so widgets match the app's "Focus today". */
+    static long liveFocusMs(Context c, JSONObject snap) {
+        JSONObject t = Store.timer(c);
+        if (!"focus".equals(TimerEngine.phase(t)) || !TimerEngine.active(t)) return 0;
+        JSONObject cfg = Controller.config(snap);
+        long total = t.optLong("total", TimerEngine.phaseTotal(cfg, "focus"));
+        return Math.max(0, total - TimerEngine.remaining(t, cfg, System.currentTimeMillis()));
     }
 
     private static String dayKey(long ms) {

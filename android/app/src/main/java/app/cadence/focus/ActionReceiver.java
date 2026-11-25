@@ -80,7 +80,14 @@ public class ActionReceiver extends BroadcastReceiver {
                     break;
                 }
                 case "musicToggle":
-                    Store.queue(c, Store.obj("type", "music", "at", now));
+                case "musicNext":
+                case "musicPrev":
+                case "musicStop":
+                    if ("musicToggle".equals(cmd)) MusicSession.playing = !MusicSession.playing;
+                    if ("musicStop".equals(cmd)) { MusicSession.has = false; MusicSession.playing = false; }
+                    Store.queue(c, Store.obj("type", "music", "cmd", cmd, "at", now));
+                    break;
+                case "openMusic":
                     break;
                 default:
                     return;

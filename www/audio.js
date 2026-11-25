@@ -380,14 +380,27 @@
       { id: 'for-1', title: 'Morning Canopy', length: 600, gen: forest({ seed: 20, crickets: false }) },
       { id: 'for-2', title: 'Pine Wind', length: 600, gen: forest({ seed: 21, crickets: false }) },
     ] },
+    { id: 'other', name: 'Others', tracks: [] },
   ];
 
   // ---------- player ----------
   const state = { track: null, playing: false, elapsedBefore: 0, startedAt: 0, parts: [], bus: null, endTimer: null };
+  // Tracks the user uploaded: played from the file with an <audio> element instead of being synthesized.
+  const custom = new Map();
+  let fileEl = null;
+  let masterVol = 0.6;
+  function fileAudio() {
+    if (!fileEl) { fileEl = new Audio(); fileEl.preload = 'auto'; fileEl.addEventListener('ended', () => { if (state.track && state.track.file) emit({ type: 'ended', track: state.track }); }); }
+    return fileEl;
+  }
   const listeners = new Set();
   const emit = (ev) => listeners.forEach((fn) => { try { fn(ev); } catch (e) { console.error(e); } });
 
   function findTrack(id) {
+    if (custom.has(id)) {
+      const t = custom.get(id); const c = LIB.find((x) => x.id === t.category);
+      return Object.assign({ category: c ? c.id : t.category, categoryName: c ? c.name : 'My music', file: true }, t);
+    }
     for (const c of LIB) for (const t of c.tracks) if (t.id === id) return Object.assign({ category: c.id, categoryName: c.name }, t);
     return null;
   }
@@ -409,12 +422,14 @@
 
   function position() {
     if (!state.track) return 0;
+    if (state.track.file) return fileEl ? fileEl.currentTime || 0 : state.elapsedBefore;
     if (!state.playing || !ctx) return state.elapsedBefore;
     return state.elapsedBefore + (ctx.currentTime - state.startedAt);
   }
 
   function watchEnd() {
     clearInterval(state.endTimer);
+    if (state.track && state.track.file) return; // the <audio> element reports the end itself
     state.endTimer = setInterval(() => {
       if (state.playing && state.track && position() >= state.track.length) {
         clearInterval(state.endTimer); emit({ type: 'ended', track: state.track });
@@ -423,15 +438,28 @@
   }
 
   const api = {
-    library: LIB.map((c) => ({ id: c.id, name: c.name, tracks: c.tracks.map((t) => ({ id: t.id, title: t.title, length: t.length, category: c.id, categoryName: c.name })) })),
+    get library() {
+      return LIB.map((c) => ({ id: c.id, name: c.name, tracks: c.tracks.map((t) => ({ id: t.id, title: t.title, length: t.length, category: c.id, categoryName: c.name }))
+        .concat(Array.from(custom.values()).filter((t) => t.category === c.id).map((t) => ({ id: t.id, title: t.title, length: t.length, category: c.id, categoryName: c.name, file: true }))) }));
+    },
+    /** Registers uploaded tracks: [{ id, title, category, src, length }]. */
+    setCustom(list) { custom.clear(); (list || []).forEach((t) => custom.set(t.id, t)); },
     supported: !!(window.AudioContext || window.webkitAudioContext),
-    findTrack(id) { const t = findTrack(id); return t ? { id: t.id, title: t.title, length: t.length, category: t.category, categoryName: t.categoryName } : null; },
+    findTrack(id) { const t = findTrack(id); return t ? { id: t.id, title: t.title, length: t.length, category: t.category, categoryName: t.categoryName, file: !!t.file } : null; },
     on(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     async play(trackId) {
       if (!ensureCtx()) return false;
       if (ctx.state === 'suspended') { try { await ctx.resume(); } catch (e) {} }
       const t = findTrack(trackId); if (!t) return false;
       stopParts(0.5);
+      if (fileEl) fileEl.pause();
+      if (t.file) {
+        const el = fileAudio(); el.src = t.src; el.volume = masterVol;
+        try { await el.play(); } catch (e) { return false; }
+        if (!t.length && isFinite(el.duration)) t.length = Math.round(el.duration);
+        state.track = t; state.elapsedBefore = 0; state.playing = true; clearInterval(state.endTimer);
+        emit({ type: 'play', track: t }); return true;
+      }
       state.track = t; state.elapsedBefore = 0; state.playing = true;
       startParts(); watchEnd(); emit({ type: 'play', track: t }); return true;
     },
@@ -440,20 +468,24 @@
       if (!ensureCtx()) return false;
       if (ctx.state === 'suspended') { try { await ctx.resume(); } catch (e) {} }
       if (state.playing) return true;
+      if (state.track.file) { try { await fileAudio().play(); } catch (e) { return false; } state.playing = true; emit({ type: 'play', track: state.track }); return true; }
       state.playing = true; startParts(); watchEnd(); emit({ type: 'play', track: state.track }); return true;
     },
     pause() {
       if (!state.playing) return;
-      state.elapsedBefore = position(); state.playing = false; stopParts(0.3); clearInterval(state.endTimer);
+      state.elapsedBefore = position(); state.playing = false;
+      if (state.track && state.track.file) { if (fileEl) fileEl.pause(); } else stopParts(0.3);
+      clearInterval(state.endTimer);
       emit({ type: 'pause', track: state.track });
     },
     stop() { if (state.playing) api.pause(); state.track = null; state.elapsedBefore = 0; emit({ type: 'stop' }); },
     seek(sec) {
       if (!state.track) return;
       const v = Math.max(0, Math.min(state.track.length - 1, sec));
+      if (state.track.file) { if (fileEl) fileEl.currentTime = v; state.elapsedBefore = v; return; }
       if (state.playing && ctx) { state.elapsedBefore = v; state.startedAt = ctx.currentTime; } else state.elapsedBefore = v;
     },
-    setVolume(v) { ensureCtx(); if (master) master.gain.setTargetAtTime(Math.max(0, Math.min(1, v)), ctx.currentTime, 0.05); },
+    setVolume(v) { masterVol = Math.max(0, Math.min(1, v)); if (fileEl) fileEl.volume = masterVol; ensureCtx(); if (master) master.gain.setTargetAtTime(masterVol, ctx.currentTime, 0.05); },
     get current() { return state.track ? api.findTrack(state.track.id) : null; },
     get playing() { return state.playing; },
     position,

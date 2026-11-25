@@ -86,6 +86,13 @@
     openSettings: (which) => (Native ? quiet(Native.openSettings({ which })) : Promise.resolve()),
     setAppearance: (dark, color) => (Native ? quiet(() => Native.setAppearance({ dark, color })) : Promise.resolve()),
     shareFile: (filename, text, mimeType = 'application/json') => (Native ? Native.shareFile({ filename, text, mimeType }) : Promise.reject(new Error('Not available'))),
+    vibrate: (pattern) => (Native ? quiet(() => Native.vibrate({ pattern })) : Promise.resolve()),
+    pinWidget: (kind) => (Native ? quiet(() => Native.pinWidget({ kind }), { supported: false }) : Promise.resolve({ supported: false })),
+    listApps: () => (Native ? quiet(() => Native.listApps().then((r) => (r && r.apps) || []), []) : Promise.resolve([])),
+    pickAudio: () => (Native ? quiet(() => Native.pickAudio().then((r) => (r && r.files) || []), []) : Promise.resolve([])),
+    deleteAudio: (path) => (Native ? quiet(() => Native.deleteAudio({ path })) : Promise.resolve()),
+    /** URL the WebView can load for a file stored by the app. */
+    fileSrc: (path) => (Cap && typeof Cap.convertFileSrc === 'function' ? Cap.convertFileSrc(path) : path),
     onActions: (fn) => { if (Native) Native.addListener('actions', fn); },
     onBack: (fn) => { if (App) App.addListener('backButton', fn); },
     onResume: (fn) => { if (App) App.addListener('resume', fn); },

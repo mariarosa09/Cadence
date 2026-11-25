@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Notifications for reminders, finished sessions and screen breaks (Android 13+). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -15,6 +16,25 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Wake the screen and show alerts when a session or break ends. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- App lock: see which app is open and cover locked apps (both granted by the user in settings). -->
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- The allowed-apps list shows the user's launchable apps. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
+    </queries>
 
     <application
         android:allowBackup="true"
@@ -39,6 +59,26 @@
             </intent-filter>
         </activity>
 
+        <!-- Full-screen alert when a session, break or screen break ends (wakes the screen) -->
+        <activity
+            android:name=".AlertActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:showWhenLocked="true"
+            android:taskAffinity="app.cadence.focus.alert"
+            android:theme="@style/AppTheme.Alert"
+            android:turnScreenOn="true" />
+
+        <!-- Lock screen shown over apps that are not allowed during focus -->
+        <activity
+            android:name=".BlockActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:taskAffinity="app.cadence.focus.block"
+            android:theme="@style/AppTheme.Alert" />
+
         <!-- Home-screen widgets -->
         <receiver
             android:name=".TimerWidget"
@@ -62,6 +102,106 @@
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_today_info" />
+        </receiver>
+
+        <receiver
+            android:name=".UpcomingWidget"
+            android:exported="true"
+            android:label="@string/upcoming_widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/upcoming_widget_info" />
+        </receiver>
+        <receiver
+            android:name=".DeadlinesWidget"
+            android:exported="true"
+            android:label="@string/deadlines_widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/deadlines_widget_info" />
+        </receiver>
+        <receiver
+            android:name=".ProgressWidget"
+            android:exported="true"
+            android:label="@string/progress_widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/progress_widget_info" />
+        </receiver>
+        <receiver
+            android:name=".WeeklyWidget"
+            android:exported="true"
+            android:label="@string/weekly_widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/weekly_widget_info" />
+        </receiver>
+        <receiver
+            android:name=".StreakWidget"
+            android:exported="true"
+            android:label="@string/streak_widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/streak_widget_info" />
+        </receiver>
+        <receiver
+            android:name=".CalendarWidget"
+            android:exported="true"
+            android:label="@string/calendar_widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/calendar_widget_info" />
+        </receiver>
+        <receiver
+            android:name=".MusicWidget"
+            android:exported="true"
+            android:label="@string/music_widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/music_widget_info" />
+        </receiver>
+        <receiver
+            android:name=".ScreenBreakWidget"
+            android:exported="true"
+            android:label="@string/screen_break_widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/screen_break_widget_info" />
+        </receiver>
+        <receiver
+            android:name=".QuoteWidget"
+            android:exported="true"
+            android:label="@string/quote_widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/quote_widget_info" />
         </receiver>
 
         <!-- Widget buttons and notification actions -->
@@ -89,7 +229,11 @@
         <service
             android:name=".FocusService"
             android:exported="false"
-            android:foregroundServiceType="mediaPlayback" />
+            android:foregroundServiceType="mediaPlayback|specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="@string/fgs_special_use" />
+        </service>
 
         <provider
             android:name="androidx.core.content.FileProvider"

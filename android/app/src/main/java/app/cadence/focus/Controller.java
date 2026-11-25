@@ -28,10 +28,8 @@ final class Controller {
     static final String ALARM_TIMER = "app.cadence.focus.ALARM_TIMER";
     static final String ALARM_REMINDERS = "app.cadence.focus.ALARM_REMINDERS";
     static final String ALARM_EYE = "app.cadence.focus.ALARM_EYE";
-
-    /** Whether focus music is playing in this process (false after the process restarts). */
-    static volatile boolean musicPlaying = false;
-    static volatile String musicTitle = "";
+    static final String ALARM_MIDNIGHT = "app.cadence.focus.ALARM_MIDNIGHT";
+    static final String ALARM_MINUTE = "app.cadence.focus.ALARM_MINUTE";
 
     private Controller() {}
 
@@ -59,8 +57,21 @@ final class Controller {
         setAlarm(c, ALARM_TIMER, TimerEngine.running(t) ? t.optLong("endAt") : 0);
         deliverReminders(c, snap, now);
         scheduleEye(c, snap, t, now);
+        setAlarm(c, ALARM_MIDNIGHT, nextMidnight(now));
+        // While focusing, the widgets' "focus today" minutes go up every minute.
+        boolean focusing = TimerEngine.running(t) && "focus".equals(TimerEngine.phase(t));
+        setAlarm(c, ALARM_MINUTE, focusing ? Math.min(t.optLong("endAt"), now + 60_000L) : 0);
         Widgets.updateAll(c);
         updateOngoing(c, snap, t);
+    }
+
+    /** Widgets show "today": redraw them just after midnight. */
+    private static long nextMidnight(long now) {
+        java.util.Calendar cal = java.util.Calendar.getInstance();
+        cal.setTimeInMillis(now);
+        cal.set(java.util.Calendar.HOUR_OF_DAY, 0); cal.set(java.util.Calendar.MINUTE, 0); cal.set(java.util.Calendar.SECOND, 30); cal.set(java.util.Calendar.MILLISECOND, 0);
+        cal.add(java.util.Calendar.DAY_OF_MONTH, 1);
+        return cal.getTimeInMillis();
     }
 
     /* ---------- alarms ---------- */
@@ -89,9 +100,13 @@ final class Controller {
 
     private static void notifyPhaseEnded(Context c, JSONObject snap, JSONObject t, String ended) {
         JSONObject cats = snap.optJSONObject("notif");
+        String kind = "focus".equals(ended) ? AlertActivity.KIND_FOCUS_END : AlertActivity.KIND_BREAK_END;
+        // Full-screen: wakes a sleeping screen and shows over the lock screen.
+        PendingIntent full = PendingIntent.getActivity(c, 24, AlertActivity.intent(c, kind), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         NotificationCompat.Builder b = Notifier.builder(c, Notifier.CH_TIMER)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setFullScreenIntent(full, true)
             .setContentIntent(Notifier.openApp(c, "focus", 21));
         if ("focus".equals(ended)) {
             if (cats != null && !cats.optBoolean("pomodoro", true)) return;
@@ -110,6 +125,11 @@ final class Controller {
             b.setContentTitle("Break finished").setContentText("Ready for another focus session?");
             b.addAction(0, "Start focus", Notifier.command(c, "timerToggle", null, 23));
         }
+        // While the phone is in use, cover the current app (with "display over other apps"). On a
+        // sleeping or locked phone the full-screen intent opens the alert. Either way the alert screen
+        // plays the sound and vibrates, so the notification itself stays quiet.
+        boolean shown = AlertActivity.showNow(c, kind) || AlertActivity.fullScreenWillShow(c);
+        if (shown) b.setSilent(true);
         Notifier.post(c, Notifier.ID_PHASE, b);
     }
 
@@ -118,17 +138,17 @@ final class Controller {
         JSONObject cfg = config(snap);
         JSONObject t = Store.timer(c);
         boolean timerActive = TimerEngine.active(t);
-        if (!timerActive && !musicPlaying) return null;
+        if (!timerActive) return null;
         long now = System.currentTimeMillis();
         boolean h24 = snap.optBoolean("use24h");
 
         NotificationCompat.Builder b = Notifier.builder(c, Notifier.CH_ONGOING)
-            .setOngoing(true).setAutoCancel(false).setOnlyAlertOnce(true).setSilent(true)
+            .setOngoing(true).setAutoCancel(false).setOnlyAlertOnce(true).setSilent(true).setVibrate(null).setDefaults(0)
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setContentIntent(Notifier.openApp(c, "focus", 11));
 
-        if (timerActive) {
+        {
             String phase = TimerEngine.phase(t);
             String task = cfg.optString("taskTitle", "");
             String title = TimerEngine.label(phase) + ("focus".equals(phase) && !task.isEmpty() ? " · " + task : "");
@@ -143,30 +163,27 @@ final class Controller {
                 b.addAction(0, "Resume", Notifier.command(c, "timerToggle", null, 12));
             }
             b.addAction(0, "focus".equals(phase) ? "End early" : "Skip break", Notifier.command(c, "timerSkip", null, 13));
-            if (musicPlaying && !musicTitle.isEmpty()) b.setSubText("♪ " + musicTitle);
-        } else {
-            b.setContentTitle("Focus music").setContentText(musicTitle).setShowWhen(false);
         }
-        if (musicPlaying) b.addAction(0, "Pause music", Notifier.command(c, "musicToggle", null, 14));
         return b.build();
     }
 
     static void updateOngoing(Context c, JSONObject snap, JSONObject t) {
-        Notification n = buildOngoing(c);
-        if (n == null) {
-            FocusService.stop(c);
-            Notifier.cancel(c, Notifier.ID_ONGOING);
-            return;
-        }
-        if (musicPlaying) {
-            // A foreground service keeps the app alive so music keeps playing in the background.
-            if (!FocusService.running && FocusService.start(c)) return;
-        } else if (FocusService.running) {
-            FocusService.stop(c);
-        }
-        if (Notifier.enabled(c)) {
-            try { androidx.core.app.NotificationManagerCompat.from(c).notify(Notifier.ID_ONGOING, n); } catch (SecurityException ignored) {}
-        }
+        boolean needService = (MusicSession.has && MusicSession.playing) || AppLock.active(c, snap, t);
+        if (needService) FocusService.start(c);
+        else FocusService.stop(c);
+        postNotifications(c);
+    }
+
+    /** The running-timer notification and the music player notification. */
+    static void postNotifications(Context c) {
+        if (!Notifier.enabled(c)) return;
+        androidx.core.app.NotificationManagerCompat nm = androidx.core.app.NotificationManagerCompat.from(c);
+        try {
+            Notification timer = buildOngoing(c);
+            if (timer != null) nm.notify(Notifier.ID_ONGOING, timer); else nm.cancel(Notifier.ID_ONGOING);
+            if (MusicSession.has) nm.notify(Notifier.ID_MUSIC, MusicSession.build(c));
+            else { nm.cancel(Notifier.ID_MUSIC); MusicSession.release(); }
+        } catch (SecurityException ignored) {}
     }
 
     /* ---------- task reminders ---------- */
@@ -268,7 +285,7 @@ final class Controller {
                     .setContentIntent(Notifier.openApp(c, "screenBreak", 31))
                     .addAction(0, "Done", Notifier.command(c, "eyeDone", null, 32))
                     .addAction(0, "Snooze " + e.optInt("postponeMin", 5) + " min", Notifier.command(c, "eyeSnooze", null, 33));
-                Notifier.post(c, Notifier.ID_EYE, b);
+                if (!AlertActivity.showNow(c, AlertActivity.KIND_SCREEN)) Notifier.post(c, Notifier.ID_EYE, b);
                 Store.queue(c, Store.obj("type", "eyeFired", "at", now));
             }
             // Screen off counts as a rest: start a fresh interval either way.

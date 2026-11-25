@@ -87,9 +87,9 @@ window.CadenceStore.ready.then(() => {
   ];
   const DEFAULTS = {
     settings: {
-      general: { theme: 'system', timeFormat: '12', weekStart: 1, sounds: true, timerSound: true, chimeVolume: 0.5, vibrate: true },
+      general: { theme: 'system', timeFormat: '12', weekStart: 0, sounds: true, timerSound: true, chimeVolume: 0.5, vibrate: true },
       pomodoro: { focus: 25, short: 5, long: 15, interval: 4, autoTransition: true },
-      focusMode: { defaultDuration: 25, dnd: true, allow: { calls: true, repeatCallers: true, messages: false, events: true }, autoMusic: true, trackWork: true },
+      focusMode: { defaultDuration: 25, dnd: false, dndAuto: false, allow: { calls: true, repeatCallers: true, messages: false, events: true }, lockApps: false, allowedApps: [], autoMusic: true, trackWork: true },
       screenBreak: { enabled: true, interval: 20, duration: 20, applyTo: 'both', pauseTimer: true, postponeMin: 5 },
       notifications: { categories: { upcoming: true, start: true, endApproach: true, overdue: true, deadline: true, pomodoro: true, breakDone: true, screenBreak: true, daily: true, achievements: true }, defaultReminder: 10, endLead: 10, deadlineLead: 60, dailyTime: '09:00', sound: true },
       music: { category: 'lofi', volume: 0.6, pauseOnBreak: true },
@@ -97,11 +97,12 @@ window.CadenceStore.ready.then(() => {
       breakSuggestions: DEFAULT_SUGGESTIONS.slice(),
     },
     tasks: [], sessions: [], eyeLog: [], notifs: [], ach: {},
-    widgets: { order: ['pomodoro', 'today', 'upnext', 'progress', 'deadlines', 'weekly', 'streak', 'music', 'minical', 'screenbreak', 'quote'], hidden: [] },
+    // A fresh install starts with an empty dashboard; widgets are added from Customize.
+    widgets: { order: [], hidden: ['pomodoro', 'today', 'upnext', 'progress', 'deadlines', 'weekly', 'streak', 'music', 'minical', 'screenbreak', 'quote'] },
     timer: { phase: 'focus', status: 'idle', endAt: 0, remaining: 0, total: 0, cycle: 0, taskId: null, awaiting: null, phaseStartedAt: 0 },
-    focus: { active: false, taskId: null, duration: 25, music: 'lofi', dnd: true, allow: null, resumeAfterBreak: true, startedAt: 0 },
+    focus: { active: false, taskId: null, duration: 25, music: 'lofi', dnd: false, lockApps: false, allow: null, resumeAfterBreak: true, startedAt: 0 },
     eye: { accum: 0, lastTick: 0, snoozeUntil: 0, active: null },
-    music: { category: 'lofi', trackId: null, repeat: false, shuffle: false, favorites: [], volume: 0.6 },
+    music: { category: 'lofi', trackId: null, repeat: false, shuffle: false, favorites: [], volume: 0.6, uploads: [] },
     sent: {},
     ui: { screen: 'home', taskView: 'all', calView: 'month', sort: 'scheduled' },
   };
@@ -161,7 +162,10 @@ window.CadenceStore.ready.then(() => {
   S.eyeLog = S.eyeLog.filter((e) => e && isNum(e.ts) && ['completed', 'skipped', 'postponed'].includes(e.action));
   S.notifs = S.notifs.filter((n) => n && n.id && isNum(n.ts));
   S.widgets.order = S.widgets.order.filter((w) => ALL_WIDGETS[w]);
-  Object.keys(ALL_WIDGETS).forEach((w) => { if (!S.widgets.order.includes(w)) S.widgets.order.push(w); });
+  S.widgets.hidden = S.widgets.hidden.filter((w, i, a) => ALL_WIDGETS[w] && a.indexOf(w) === i);
+  // Every widget is either on the dashboard (order) or available to add (hidden).
+  Object.keys(ALL_WIDGETS).forEach((w) => { if (!S.widgets.order.includes(w) && !S.widgets.hidden.includes(w)) S.widgets.hidden.push(w); });
+  S.widgets.order = S.widgets.order.filter((w) => !S.widgets.hidden.includes(w));
   if (!['focus', 'short', 'long'].includes(S.timer.phase)) S.timer = clone(DEFAULTS.timer);
   if (!['idle', 'running', 'paused'].includes(S.timer.status)) S.timer.status = 'idle';
   if (!S.focus.allow) S.focus.allow = clone(S.settings.focusMode.allow);
@@ -233,6 +237,18 @@ window.CadenceStore.ready.then(() => {
       $$('[data-c]', m.el).forEach((b) => b.onclick = () => { done = true; m.close(true); res(b.dataset.c === '1'); });
     });
   }
+  function promptText({ title, label, placeholder = '', value = '', max = 60 }) {
+    return new Promise((res) => {
+      let done = false;
+      const m = openModal({ title, size: 'sm', onClose: () => { if (!done) res(null); },
+        body: `<label class="field"><span>${esc(label)}</span><input class="input" id="promptIn" maxlength="${max}" placeholder="${esc(placeholder)}" value="${esc(value)}"></label>`,
+        foot: '<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-ok>Add</button>' });
+      const inp = m.el.querySelector('#promptIn');
+      const ok = () => { const v = inp.value.trim(); if (!v) { inp.focus(); return; } done = true; m.close(true); res(v); };
+      m.el.querySelector('[data-ok]').onclick = ok;
+      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ok(); } });
+    });
+  }
   function choiceDialog({ title, message, choices, id, dismissible = true }) {
     return new Promise((res) => {
       let done = false;
@@ -241,6 +257,149 @@ window.CadenceStore.ready.then(() => {
         onClose: () => { if (!done) res(null); } });
       $$('[data-ch]', m.el).forEach((b) => b.onclick = () => { done = true; m.close(true); res(choices[+b.dataset.ch].value); });
     });
+  }
+  /* --- App-styled dropdowns and date/time pickers (instead of the system pop-ups) --- */
+  // Each <select> and date/time input gets an invisible tap layer that opens an in-app sheet.
+  // The real control keeps its value and fires the usual change event, so forms work unchanged.
+  const DT_SEL = 'input[type="datetime-local"], input[type="date"], input[type="time"]';
+  function enhanceControls(root) {
+    if (!root || !root.querySelectorAll) return;
+    const list = Array.from(root.querySelectorAll(`select:not([data-enh]), ${DT_SEL.split(', ').map((x) => x + ':not([data-enh])').join(', ')}`));
+    if (root.matches && root.matches(`select, ${DT_SEL}`) && !root.dataset.enh) list.push(root);
+    list.forEach((el) => {
+      el.dataset.enh = '1';
+      const isDt = el.tagName === 'INPUT';
+      const wrap = document.createElement('span');
+      const block = !el.closest('.ctl') || el.closest('.mini-select');
+      wrap.className = `enh-wrap${block ? ' block' : ''}${isDt ? ' dt' : ''}`;
+      el.parentNode.insertBefore(wrap, el); wrap.appendChild(el);
+      const hit = document.createElement('span'); hit.className = 'enh-hit'; wrap.appendChild(hit);
+      if (isDt) { hit.classList.add('dt-label'); el.tabIndex = -1; }
+    });
+    refreshDtLabels();
+  }
+  function dtText(el) {
+    const v = el.value;
+    if (!v) return `<span class="ph">${el.type === 'time' ? 'Set time' : 'Not set'}</span>`;
+    if (el.type === 'time') { const [h, m] = v.split(':').map(Number); return esc(fmtTime(new Date(2000, 0, 1, h, m))); }
+    if (el.type === 'date') return esc(fmtDay(v + 'T00:00', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }));
+    return esc(`${fmtDay(v, { month: 'short', day: 'numeric' })}, ${fmtTime(v)}`);
+  }
+  function refreshDtLabels() {
+    $$('.enh-wrap.dt').forEach((w) => {
+      const el = w.querySelector('input'); const h = w.querySelector('.dt-label'); if (!el || !h) return;
+      const key = `${el.value}|${S.settings.general.timeFormat}`;
+      if (h.dataset.v !== key) { h.dataset.v = key; h.innerHTML = dtText(el) + icon(el.type === 'time' ? 'i-clock' : 'i-cal'); }
+    });
+  }
+  new MutationObserver((muts) => {
+    for (const mu of muts) {
+      if (mu.target.closest && mu.target.closest('.enh-hit')) continue; // our own label updates
+      mu.addedNodes.forEach((n) => { if (n.nodeType === 1 && !n.classList.contains('enh-wrap') && !n.classList.contains('enh-hit')) enhanceControls(n); });
+    }
+  })
+    .observe(document.body, { childList: true, subtree: true });
+  // Values set from code (quick buttons, resets) have no event: refresh labels after every interaction.
+  ['click', 'input', 'change'].forEach((t) => document.addEventListener(t, () => requestAnimationFrame(refreshDtLabels)));
+  document.addEventListener('click', (e) => {
+    const hit = e.target.closest('.enh-hit'); if (!hit) return;
+    e.preventDefault(); e.stopPropagation();
+    const el = hit.parentNode.querySelector('select, input'); if (!el || el.disabled) return;
+    if (el.tagName === 'SELECT') openSelectSheet(el); else openDateTimeSheet(el);
+  }, true);
+  function controlTitle(el) {
+    const f = el.closest('.field, .mini-select'); const r = el.closest('.set-row');
+    const t = (f && f.querySelector(':scope > span')) || (r && r.querySelector('.lbl b'));
+    return (t && t.textContent.replace(/^\d+\.\s*/, '').replace(/\*$/, '').trim()) || el.getAttribute('aria-label') || 'Choose';
+  }
+  function commit(el, value) {
+    el.value = value;
+    el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  function openSelectSheet(el) {
+    const opts = Array.from(el.options);
+    const m = openModal({ title: controlTitle(el), id: 'select-sheet', size: 'sheet', body: `<div class="opt-list" role="listbox">${opts.map((o, i) => `<button type="button" class="opt ${o.selected ? 'on' : ''} ${o.dataset.new ? 'opt-new' : ''}" data-i="${i}" role="option" aria-selected="${o.selected}" ${o.disabled ? 'disabled' : ''}><span class="opt-l">${o.dataset.color ? `<i class="opt-dot" style="background:${o.dataset.color}"></i>` : ''}${o.dataset.new ? icon('i-plus') : ''}${esc(o.text)}</span>${o.selected ? icon('i-check') : ''}</button>`).join('')}</div>` });
+    const on = m.el.querySelector('.opt.on'); if (on) setTimeout(() => on.scrollIntoView({ block: 'center' }), 20);
+    m.el.querySelector('.opt-list').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-i]'); if (!b) return;
+      m.close(true); el.selectedIndex = +b.dataset.i; commit(el, el.value);
+    });
+  }
+  function openDateTimeSheet(el) {
+    const type = el.type; const hasDate = type !== 'time'; const hasTime = type !== 'date';
+    const h24 = S.settings.general.timeFormat === '24';
+    let cur;
+    if (el.value) cur = type === 'time' ? new Date(`2000-01-01T${el.value}`) : new Date(type === 'date' ? el.value + 'T09:00' : el.value);
+    else { cur = new Date(); cur.setSeconds(0, 0); cur.setMinutes(Math.ceil(cur.getMinutes() / 5) * 5); }
+    let view = new Date(cur.getFullYear(), cur.getMonth(), 1);
+    let tab = hasDate ? 'date' : 'time';
+    const m = openModal({ title: controlTitle(el), id: 'dt-sheet', size: 'sheet', body: '<div class="dtp"></div>',
+      foot: `${type !== 'time' && !el.required ? '<button class="btn btn-ghost" data-clear>Clear</button><span class="spacer"></span>' : ''}<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-done>Done</button>` });
+    const root = m.el.querySelector('.dtp');
+    const ITEM = 44; // px per wheel row (matches .wheel button height)
+    const hourVals = h24 ? Array.from({ length: 24 }, (_, i) => i) : Array.from({ length: 12 }, (_, i) => i + 1);
+    const minVals = Array.from({ length: 60 }, (_, i) => i);
+    const wheel = (name, vals, sel, fmt) => `<div class="wheel" data-wheel="${name}"><div class="wheel-pad"></div>${vals.map((v) => `<button type="button" data-v="${v}" class="${v === sel ? 'on' : ''}">${fmt(v)}</button>`).join('')}<div class="wheel-pad"></div></div>`;
+    const header = () => `<div class="dtp-head">${hasDate ? `<button type="button" class="dtp-chip ${tab === 'date' ? 'on' : ''}" data-tab="date">${icon('i-cal')}<span>${esc(fmtDay(cur, { weekday: 'short', month: 'short', day: 'numeric', year: cur.getFullYear() !== new Date().getFullYear() ? 'numeric' : undefined }))}</span></button>` : ''}
+      ${hasTime ? `<button type="button" class="dtp-chip ${tab === 'time' ? 'on' : ''}" data-tab="time">${icon('i-clock')}<span>${esc(fmtTime(cur))}</span></button>` : ''}</div>`;
+    const dateView = () => {
+      const start = weekStartOf(view); const today = dayKey(new Date());
+      return `<div class="dtp-nav"><button type="button" class="cal-arrow" data-nav="-1" aria-label="Previous month">${icon('i-left')}</button><b>${esc(view.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }))}</b><button type="button" class="cal-arrow" data-nav="1" aria-label="Next month">${icon('i-right')}</button></div>
+        <div class="dtp-grid">${Array.from({ length: 7 }, (_, i) => `<span class="dow">${addDays(start, i).toLocaleDateString(undefined, { weekday: 'narrow' })}</span>`).join('')}
+        ${Array.from({ length: 42 }, (_, i) => { const x = addDays(start, i); const k = dayKey(x); return `<button type="button" class="dd ${x.getMonth() !== view.getMonth() ? 'other' : ''} ${k === today ? 'today' : ''} ${k === dayKey(cur) ? 'on' : ''}" data-day="${k}">${x.getDate()}</button>`; }).join('')}</div>
+        <div class="dtp-quick"><button type="button" class="pill" data-q="0">Today</button><button type="button" class="pill" data-q="1">Tomorrow</button><button type="button" class="pill" data-q="7">Next week</button></div>`;
+    };
+    const timeView = () => {
+      const hr = cur.getHours(); const shownH = h24 ? hr : (hr % 12 || 12);
+      return `<div class="tpick"><div class="tpick-band" aria-hidden="true"></div>
+        ${wheel('h', hourVals, shownH, (v) => (h24 ? pad(v) : String(v)))}<span class="tpick-colon">:</span>${wheel('m', minVals, cur.getMinutes(), pad)}
+</div>
+        ${h24 ? '' : `<div class="tpick-ampm"><button type="button" data-ap="am" class="${hr < 12 ? 'on' : ''}">AM</button><button type="button" data-ap="pm" class="${hr >= 12 ? 'on' : ''}">PM</button></div>`}
+        <div class="dtp-quick">${[5, 15, 30].map((x) => `<button type="button" class="pill" data-step="${x}">+${x} min</button>`).join('')}<button type="button" class="pill" data-step="60">+1 hour</button></div>`;
+    };
+    const centerWheels = (smooth) => root.querySelectorAll('.wheel').forEach((w) => { const on = w.querySelector('.on'); if (on) w.scrollTo({ top: on.offsetTop - w.clientHeight / 2 + ITEM / 2, behavior: smooth ? 'smooth' : 'auto' }); });
+    const draw = () => {
+      root.innerHTML = header() + `<div class="dtp-body">${tab === 'date' ? dateView() : timeView()}</div>`;
+      if (tab === 'time') { centerWheels(false); bindWheels(); }
+    };
+    const setFromWheel = (name, v) => {
+      if (name === 'h') cur.setHours(h24 ? v : (v % 12) + (cur.getHours() >= 12 ? 12 : 0));
+      else cur.setMinutes(v);
+      const chip = root.querySelector('[data-tab="time"] span'); if (chip) chip.textContent = fmtTime(cur);
+    };
+    function bindWheels() {
+      root.querySelectorAll('.wheel').forEach((w) => {
+        let t = null;
+        w.addEventListener('scroll', () => {
+          clearTimeout(t);
+          t = setTimeout(() => {
+            const idx = Math.round(w.scrollTop / ITEM); const btns = w.querySelectorAll('button'); const b = btns[Math.max(0, Math.min(btns.length - 1, idx))];
+            if (!b || b.classList.contains('on')) return;
+            btns.forEach((x) => x.classList.toggle('on', x === b)); setFromWheel(w.dataset.wheel, +b.dataset.v);
+          }, 90);
+        }, { passive: true });
+      });
+    }
+    root.addEventListener('click', (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      if (b.dataset.tab) { tab = b.dataset.tab; draw(); return; }
+      if (b.dataset.nav) { view = new Date(view.getFullYear(), view.getMonth() + +b.dataset.nav, 1); draw(); return; }
+      if (b.dataset.day) {
+        const [y, mo, da] = b.dataset.day.split('-').map(Number); cur.setFullYear(y, mo - 1, da);
+        if (cur.getMonth() !== view.getMonth()) view = new Date(y, mo - 1, 1);
+        if (hasTime) tab = 'time'; draw(); return; // after picking a day, go straight to the time
+      }
+      if (b.dataset.q != null) { const t = addDays(startOfDay(new Date()), +b.dataset.q); cur.setFullYear(t.getFullYear(), t.getMonth(), t.getDate()); view = new Date(t.getFullYear(), t.getMonth(), 1); draw(); return; }
+      if (b.dataset.step) { cur = new Date(cur.getTime() + +b.dataset.step * MIN); view = new Date(cur.getFullYear(), cur.getMonth(), 1); draw(); return; }
+      if (b.dataset.ap) { const h = cur.getHours(); if (b.dataset.ap === 'am' && h >= 12) cur.setHours(h - 12); if (b.dataset.ap === 'pm' && h < 12) cur.setHours(h + 12); draw(); return; }
+      if (b.dataset.v != null) { const w = b.closest('.wheel'); w.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); setFromWheel(w.dataset.wheel, +b.dataset.v); centerWheels(true); }
+    });
+    m.el.querySelector('[data-done]').onclick = () => {
+      const date = `${cur.getFullYear()}-${pad(cur.getMonth() + 1)}-${pad(cur.getDate())}`; const time = `${pad(cur.getHours())}:${pad(cur.getMinutes())}`;
+      m.close(true); commit(el, type === 'time' ? time : type === 'date' ? date : `${date}T${time}`);
+    };
+    const clr = m.el.querySelector('[data-clear]'); if (clr) clr.onclick = () => { m.close(true); commit(el, ''); };
+    draw();
   }
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
@@ -369,7 +528,7 @@ window.CadenceStore.ready.then(() => {
         <label class="field"><span>Description</span><textarea class="textarea" name="description" placeholder="Notes, links, context">${esc(d.description)}</textarea></label>
         <div class="grid-2">
           <label class="field"><span>Priority</span><select class="select" name="priority">${['low', 'medium', 'high'].map((p) => `<option value="${p}" ${d.priority === p ? 'selected' : ''}>${p[0].toUpperCase() + p.slice(1)}</option>`).join('')}</select></label>
-          <label class="field"><span>Category</span><input class="input" name="category" list="catList" value="${esc(d.category)}" maxlength="40"><datalist id="catList">${categories().map((c) => `<option value="${esc(c)}">`).join('')}</datalist></label>
+          <label class="field"><span>Category</span><select class="select" name="category">${Array.from(new Set(categories().concat(d.category ? [d.category] : []))).map((c) => `<option value="${esc(c)}" data-color="${catColor(c)}" ${c === d.category ? 'selected' : ''}>${esc(c)}</option>`).join('')}<option value="__new" data-new="1">New category…</option></select></label>
         </div>
         <div class="form-section"><h4>Schedule</h4>
           <div class="grid-2">
@@ -412,6 +571,18 @@ window.CadenceStore.ready.then(() => {
     $('#subNew', m.el).addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addSub(); } });
     $('#subEditor', m.el).addEventListener('click', (e) => { if (e.target.closest('[data-rm]')) e.target.closest('.subtask-row').remove(); });
     $('#statusPills', m.el).addEventListener('click', (e) => { const b = e.target.closest('[data-status]'); if (!b) return; status = b.dataset.status; $$('[data-status]', m.el).forEach((x) => x.setAttribute('aria-pressed', x === b)); });
+    let lastCat = form.category.value;
+    form.category.addEventListener('change', async () => {
+      if (form.category.value !== '__new') { lastCat = form.category.value; return; }
+      form.category.value = lastCat;
+      const name = await promptText({ title: 'New category', label: 'Category name', placeholder: 'e.g. Side project', max: 40 });
+      if (!name) return;
+      if (!Array.from(form.category.options).some((o) => o.value === name)) {
+        const o = document.createElement('option'); o.value = name; o.textContent = name; o.dataset.color = catColor(name);
+        form.category.insertBefore(o, form.category.querySelector('[value="__new"]'));
+      }
+      form.category.value = name; lastCat = name;
+    });
     const fStart = form.start, fEnd = form.end;
     m.el.addEventListener('click', (e) => {
       const q = e.target.closest('[data-quick]'); if (!q) return;
@@ -534,10 +705,7 @@ window.CadenceStore.ready.then(() => {
   function checkAchievements() {
     const m = metrics(); let changed = false;
     ACH.forEach((a) => {
-      if (!S.ach[a.id] && a.test(m)) {
-        S.ach[a.id] = Date.now(); changed = true;
-        notify('achievements', `Achievement: ${a.name}`, a.desc, { soundKind: 'achieve' });
-      }
+      if (!S.ach[a.id] && a.test(m)) { S.ach[a.id] = Date.now(); changed = true; }
     });
     // daily goal notification (once per day)
     const k = 'goal:' + dayKey(new Date());
@@ -549,7 +717,7 @@ window.CadenceStore.ready.then(() => {
   const NOTIF_CATS = {
     upcoming: ['Upcoming scheduled tasks', 'i-cal'], start: ['Task start times', 'i-play'], endApproach: ['Task end times', 'i-clock'],
     overdue: ['Overdue tasks', 'i-flag'], deadline: ['Task deadlines', 'i-flag'], pomodoro: ['Pomodoro session completed', 'i-focus'],
-    breakDone: ['Break completed', 'i-moon'], screenBreak: ['Screen Break Reminders', 'i-eye'], daily: ['Daily productivity reminder', 'i-tasks'], achievements: ['Achievements & goals', 'i-trophy'],
+    breakDone: ['Break completed', 'i-moon'], screenBreak: ['Screen Break Reminders', 'i-eye'], daily: ['Daily productivity reminder', 'i-tasks'], achievements: ['Daily focus goal reached', 'i-trophy'],
   };
   const DND_BYPASS = ['pomodoro', 'breakDone', 'screenBreak'];
   // System permission state, refreshed from the device on start and whenever the app returns.
@@ -691,8 +859,64 @@ window.CadenceStore.ready.then(() => {
   }
   const totalMs = () => (S.timer.status === 'idle' ? phaseTotal(S.timer.phase) : S.timer.total);
   const timerTask = () => (S.timer.taskId ? getTask(S.timer.taskId) : null);
-  const restrictionsActive = () => S.focus.active && S.timer.phase === 'focus' && S.timer.status !== 'idle';
-  const dndActive = () => restrictionsActive() && S.focus.dnd;
+  // Focus-tab switches apply to every focus session: Focus Mode runs use their own copy.
+  const focusPref = (k) => (S.focus.active ? S.focus[k] : S.settings.focusMode[k]);
+  const restrictionsActive = () => S.timer.phase === 'focus' && S.timer.status !== 'idle';
+  // Do Not Disturb and app lock only count as on when Android has granted the access they need.
+  const dndOn = (v) => !!v && (!Device.isNative || devStatus.dndAccess);
+  const lockReady = () => Device.isNative && devStatus.usageAccess && devStatus.overlay;
+  const lockOn = (v) => !!v && lockReady();
+  const dndActive = () => restrictionsActive() && dndOn(focusPref('dnd'));
+  const pendingPerm = { dnd: false, lock: false };
+  async function needDndAccess() {
+    if (!Device.isNative) return;
+    const ok = await confirmDialog({ title: 'Allow Do Not Disturb access', confirmText: 'Open settings', cancelText: 'Not now',
+      message: 'To silence calls and notifications while you focus, Cadence needs permission to manage Do Not Disturb. In the list that opens, switch Cadence on, then come back.' });
+    if (ok) { pendingPerm.dnd = true; Device.openSettings('dnd'); }
+  }
+  async function needLockAccess() {
+    if (!Device.isNative) return;
+    const next = !devStatus.usageAccess ? 'usage' : !devStatus.overlay ? 'overlay' : null;
+    if (!next) return;
+    const ok = await confirmDialog({ title: next === 'usage' ? 'Allow usage access' : 'Allow display over other apps', confirmText: 'Open settings', cancelText: 'Not now',
+      message: next === 'usage'
+        ? 'To lock other apps during focus, Cadence needs to see which app is open. In the list that opens, choose Cadence and allow usage access, then come back.'
+        : 'To show the lock screen over other apps, Cadence needs “Display over other apps”. Switch it on for Cadence, then come back.' });
+    if (ok) { pendingPerm.lock = true; Device.openSettings(next); }
+  }
+  // After returning from system settings: turn on what the user was trying to turn on.
+  function applyPermissionDefaults() {
+    const fm = S.settings.focusMode; let changed = false;
+    if (Device.isNative && devStatus.dndAccess && !fm.dndAuto) { fm.dndAuto = true; fm.dnd = true; if (!S.focus.active) S.focus.dnd = true; changed = true; }
+    if (pendingPerm.dnd && devStatus.dndAccess) { pendingPerm.dnd = false; fm.dnd = true; S.focus.dnd = true; changed = true; toast('Do Not Disturb on', 'Your phone will stay quiet during focus sessions.', 'ok'); }
+    if (pendingPerm.lock) {
+      if (lockReady()) { pendingPerm.lock = false; fm.lockApps = true; S.focus.lockApps = true; changed = true; toast('App lock on', 'Apps you haven’t allowed are locked while you focus.', 'ok'); }
+      else if (devStatus.usageAccess || devStatus.overlay) setTimeout(needLockAccess, 400);
+      else pendingPerm.lock = false;
+    }
+    if (changed) save('settings', 'focus');
+  }
+  // Allowed-apps chooser (apps not chosen are locked during focus).
+  let appListCache = null;
+  async function chooseApps() {
+    if (!Device.isNative) return;
+    const m = openModal({ title: 'Allowed during focus', id: 'apps', body: `<p class="small muted">Checked apps stay usable while you focus. Every other app shows a lock screen until your break. Phone calls, Settings and Cadence are always allowed.</p>
+      <div class="search-box"><svg><use href="#i-search"/></svg><input type="search" id="appSearch" placeholder="Search apps" aria-label="Search apps"></div>
+      <div class="app-pick-list" id="appPick"><div class="empty"><p class="small muted">Loading your apps…</p></div></div>`,
+      foot: '<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>Save</button>' });
+    const chosen = new Set(S.settings.focusMode.allowedApps);
+    if (!appListCache) appListCache = await Device.listApps();
+    const draw = () => {
+      const q = ($('#appSearch', m.el).value || '').trim().toLowerCase();
+      const list = appListCache.filter((a) => !q || a.label.toLowerCase().includes(q));
+      $('#appPick', m.el).innerHTML = list.length ? list.map((a) => `<label class="app-pick"><img src="${a.icon}" alt=""><span>${esc(a.label)}</span><input type="checkbox" value="${esc(a.pkg)}" ${chosen.has(a.pkg) ? 'checked' : ''}><i class="tick"></i></label>`).join('') : '<p class="small muted" style="padding:12px">No apps match.</p>';
+    };
+    draw();
+    $('#appSearch', m.el).addEventListener('input', draw);
+    $('#appPick', m.el).addEventListener('change', (e) => { if (e.target.checked) chosen.add(e.target.value); else chosen.delete(e.target.value); });
+    m.el.querySelector('[data-save]').onclick = () => { S.settings.focusMode.allowedApps = Array.from(chosen); save('settings'); m.close(true); renderAll(); toast('Allowed apps saved', `${chosen.size} app${chosen.size === 1 ? '' : 's'} stay usable during focus.`, 'ok'); };
+  }
+  const allowedCount = () => S.settings.focusMode.allowedApps.length;
 
   function startTimer(at = Date.now()) {
     const t = S.timer; t.total = phaseTotal(t.phase); t.endAt = at + t.total; t.status = 'running'; t.phaseStartedAt = at; t.awaiting = null;
@@ -808,31 +1032,29 @@ window.CadenceStore.ready.then(() => {
 
   function openFocusSetup(taskId, isResume) {
     const editing = S.focus.active && S.timer.status !== 'idle';
-    const cfg = S.focus.active ? clone(S.focus) : { taskId: taskId || S.timer.taskId || null, duration: S.settings.focusMode.defaultDuration, music: S.settings.music.category, dnd: S.settings.focusMode.dnd, allow: clone(S.focus.allow || S.settings.focusMode.allow) };
+    const cfg = S.focus.active ? clone(S.focus) : { taskId: taskId || S.timer.taskId || null, duration: S.settings.focusMode.defaultDuration, music: S.settings.music.category, dnd: S.settings.focusMode.dnd, lockApps: S.settings.focusMode.lockApps, allow: clone(S.focus.allow || S.settings.focusMode.allow) };
     if (taskId) cfg.taskId = taskId;
     const open = S.tasks.filter((t) => t.status !== 'completed');
     const musicOpts = [['none', 'No music']].concat(CadenceAudio.library.map((c) => [c.id, c.name]));
     const body = `
       <label class="field"><span>1. Task</span><select class="select" name="task"><option value="">No specific task</option>${open.map((t) => `<option value="${t.id}" ${cfg.taskId === t.id ? 'selected' : ''}>${esc(t.title)}</option>`).join('')}</select></label>
       <div class="field"><span class="field-label">2. Focus duration</span>
-        <div class="row wrap"><div class="pill-group" id="durPills">${[15, 25, 45, 50, 60, 90].map((m) => `<button type="button" class="pill" data-dur="${m}" aria-pressed="${cfg.duration === m}">${m} min</button>`).join('')}</div>
-        <input class="input" type="number" min="1" max="240" name="duration" value="${cfg.duration}" style="width:96px" aria-label="Custom minutes"></div>
+        <div class="pill-group" id="durPills">${[15, 25, 45, 50, 60, 90].map((m) => `<button type="button" class="pill" data-dur="${m}" aria-pressed="${cfg.duration === m}">${m} min</button>`).join('')}</div>
+        <div class="input-suffix"><input class="input" type="number" inputmode="numeric" min="1" max="240" name="duration" value="${cfg.duration}" aria-label="Focus minutes"><span>min</span></div>
         ${editing ? '<span class="field-hint">Changing the duration adjusts the session that is running now.</span>' : ''}</div>
       <label class="field"><span>3. Background music</span><select class="select" name="music">${musicOpts.map(([v, l]) => `<option value="${v}" ${cfg.music === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-      <div class="set-row" style="padding:4px 0;border:0"><div class="lbl"><b>4. Do Not Disturb</b><span>Silences your phone while you focus and turns off again for breaks.</span></div><div class="ctl">${sw('name="dnd"', cfg.dnd)}</div></div>
-      ${dndAccessNote()}
-      <div class="field"><span class="field-label">5. Still allowed during focus</span>
-        <div class="app-toggle-list">${DND_ALLOW.map((a) => `<label class="app-toggle"><input type="checkbox" name="allow" value="${a.id}" ${cfg.allow[a.id] ? 'checked' : ''}>${icon(a.icon)}${a.name}</label>`).join('')}</div>
-        <span class="field-hint">Alarms and media always play.</span></div>`;
+      <div class="set-row" style="padding:4px 0;border:0"><div class="lbl"><b>4. Do Not Disturb</b><span>Silences your phone while you focus and turns off again for breaks.</span></div><div class="ctl">${sw('name="dnd"', dndOn(cfg.dnd))}</div></div>
+      <div class="set-row" style="padding:4px 0;border:0"><div class="lbl"><b>5. Lock other apps</b><span>${allowedCount()} allowed app${allowedCount() === 1 ? '' : 's'} · <button type="button" class="widget-link" data-action="chooseApps">Choose</button></span></div><div class="ctl">${sw('name="lock"', lockOn(cfg.lockApps))}</div></div>`;
     const m = openModal({ title: editing ? 'Focus settings' : isResume ? 'Next focus session' : 'Set up Focus Mode', body, id: 'focus-setup',
       foot: `<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-go>${editing ? 'Apply changes' : icon('i-play') + 'Start focusing'}</button>` });
     const durIn = m.el.querySelector('[name=duration]');
     $('#durPills', m.el).addEventListener('click', (e) => { const b = e.target.closest('[data-dur]'); if (!b) return; durIn.value = b.dataset.dur; $$('[data-dur]', m.el).forEach((x) => x.setAttribute('aria-pressed', x === b)); });
     durIn.addEventListener('input', () => $$('[data-dur]', m.el).forEach((x) => x.setAttribute('aria-pressed', x.dataset.dur === durIn.value)));
+    m.el.querySelector('[name=dnd]').addEventListener('change', (e) => { if (e.target.checked && Device.isNative && !devStatus.dndAccess) { e.target.checked = false; needDndAccess(); } });
+    m.el.querySelector('[name=lock]').addEventListener('change', (e) => { if (e.target.checked && !lockReady()) { e.target.checked = false; needLockAccess(); } });
     m.el.querySelector('[data-go]').onclick = () => {
       const dur = clamp(Math.round(+durIn.value || 25), 1, 240);
-      const allow = {}; DND_ALLOW.forEach((a) => { allow[a.id] = !!m.el.querySelector(`[name=allow][value=${a.id}]`).checked; });
-      const next = { taskId: m.el.querySelector('[name=task]').value || null, duration: dur, music: m.el.querySelector('[name=music]').value, dnd: m.el.querySelector('[name=dnd]').checked, allow };
+      const next = { taskId: m.el.querySelector('[name=task]').value || null, duration: dur, music: m.el.querySelector('[name=music]').value, dnd: m.el.querySelector('[name=dnd]').checked, lockApps: m.el.querySelector('[name=lock]').checked, allow: clone(cfg.allow) };
       m.close(true);
       if (editing) applyFocusChanges(next); else startFocusMode(next);
     };
@@ -841,24 +1063,17 @@ window.CadenceStore.ready.then(() => {
     if (S.timer.status !== 'idle') resetTimer(true);
     if (S.timer.taskId && S.timer.taskId !== cfg.taskId) stopWork(timerTask(), Date.now(), false, 'timer');
     Object.assign(S.focus, cfg, { active: true, startedAt: Date.now(), resumeAfterBreak: true });
-    S.settings.focusMode.allow = clone(cfg.allow); save('settings');
     S.timer.taskId = cfg.taskId; S.timer.phase = 'focus';
     save('focus'); startTimer();
     go('focus');
-    if (cfg.dnd && Device.isNative && !devStatus.dndAccess) {
-      toast('Focus Mode on', 'Allow Do Not Disturb access so Cadence can silence your phone while you focus.', 'ok', { actions: [{ label: 'Allow', fn: () => Device.openSettings('dnd') }] });
-    } else toast('Focus Mode on', `${cfg.duration} min${cfg.dnd ? ' · Do Not Disturb on' : ''}`, 'ok');
-  }
-  function dndAccessNote() {
-    if (!Device.isNative || devStatus.dndAccess) return '';
-    return `<div class="info-note">${icon('i-moon')}<div>To switch Do Not Disturb on for you, Cadence needs access in system settings. <button type="button" class="widget-link" data-action="dndAccess">Allow access</button></div></div>`;
+    toast('Focus Mode on', `${cfg.duration} min${dndOn(cfg.dnd) ? ' · Do Not Disturb on' : ''}${lockOn(cfg.lockApps) ? ' · apps locked' : ''}`, 'ok');
   }
   function applyFocusChanges(cfg) {
     const t = S.timer; const prevTask = t.taskId;
     if (prevTask !== cfg.taskId && t.phase === 'focus') { stopWork(timerTask(), Date.now(), false, 'timer'); t.taskId = cfg.taskId; if (t.status === 'running' && S.settings.focusMode.trackWork) startWork(timerTask(), 'timer'); }
     const durChanged = cfg.duration !== S.focus.duration;
     const musicChanged = cfg.music !== S.focus.music;
-    Object.assign(S.focus, cfg); S.settings.focusMode.allow = clone(cfg.allow);
+    Object.assign(S.focus, cfg);
     if (durChanged && t.phase === 'focus' && t.status !== 'idle') {
       const el = elapsedMs(); t.total = cfg.duration * MIN;
       if (t.status === 'running') t.endAt = Date.now() + Math.max(0, t.total - el); else t.remaining = Math.max(0, t.total - el);
@@ -1001,6 +1216,49 @@ window.CadenceStore.ready.then(() => {
 
   /* ============ 9. Music player ============ */
   const music = { pausedForBreak: false };
+  S.music.uploads = (S.music.uploads || []).filter((u) => u && u.id && u.path);
+  function registerUploads() {
+    CadenceAudio.setCustom(S.music.uploads.map((u) => ({ id: u.id, title: u.title, category: u.category, src: Device.fileSrc(u.path), length: u.length || 0 })));
+  }
+  registerUploads();
+  // Lets the user pick a category in an app-styled sheet; resolves to its id (or null).
+  function pickCategory(title, current) {
+    return new Promise((res) => {
+      let done = false;
+      const m = openModal({ title, size: 'sheet', id: 'cat-sheet', onClose: () => { if (!done) res(null); },
+        body: `<p class="small muted" style="margin-bottom:6px">Your tracks are added to this category in the player.</p><div class="opt-list">${CadenceAudio.library.map((c) => `<button type="button" class="opt ${c.id === current ? 'on' : ''}" data-id="${c.id}"><span>${esc(c.name)}</span>${c.id === current ? icon('i-check') : ''}</button>`).join('')}</div>` });
+      m.el.querySelector('.opt-list').addEventListener('click', (e) => { const b = e.target.closest('[data-id]'); if (!b) return; done = true; m.close(true); res(b.dataset.id); });
+    });
+  }
+  function audioLength(src) {
+    return new Promise((res) => {
+      const el = new Audio(); let settled = false; const fin = (v) => { if (!settled) { settled = true; res(v); } };
+      el.preload = 'metadata'; el.onloadedmetadata = () => fin(isFinite(el.duration) ? Math.round(el.duration) : 0); el.onerror = () => fin(0);
+      setTimeout(() => fin(0), 5000); el.src = src;
+    });
+  }
+  async function uploadMusic() {
+    if (!Device.isNative) { toast('Not available here', 'Uploading music works in the Cadence app.', 'err'); return; }
+    const files = await Device.pickAudio();
+    if (!files.length) return;
+    const cat = await pickCategory(files.length > 1 ? `Add ${files.length} tracks to…` : 'Add track to…', S.music.category !== 'fav' ? S.music.category : 'lofi');
+    if (!cat) { files.forEach((f) => Device.deleteAudio(f.path)); return; }
+    for (const f of files) {
+      const length = await audioLength(Device.fileSrc(f.path));
+      S.music.uploads.push({ id: 'up-' + uid(), title: String(f.name || 'Track').slice(0, 120), category: cat, path: f.path, length });
+    }
+    S.music.category = cat; save('music'); registerUploads(); renderMusic();
+    if (ui.screen === 'settings') renderSettingsKeepScroll();
+    toast(files.length > 1 ? `${files.length} tracks added` : 'Track added', `In ${(CadenceAudio.library.find((c) => c.id === cat) || {}).name || 'your music'}.`, 'ok');
+  }
+  async function removeUpload(id) {
+    const u = S.music.uploads.find((x) => x.id === id); if (!u) return;
+    if (!(await confirmDialog({ title: 'Remove track?', message: `“${esc(u.title)}” will be deleted from Cadence.`, confirmText: 'Remove', danger: true }))) return;
+    if (CadenceAudio.current && CadenceAudio.current.id === id) CadenceAudio.stop();
+    S.music.uploads = S.music.uploads.filter((x) => x.id !== id); S.music.favorites = S.music.favorites.filter((x) => x !== id);
+    Device.deleteAudio(u.path); save('music'); registerUploads(); renderMusic();
+    if (ui.screen === 'settings') renderSettingsKeepScroll();
+  }
   const CAT_ART = { lofi: 'linear-gradient(135deg,#d397fa,#8364e8)', ambient: 'linear-gradient(135deg,#8FB8F0,#6A4BD8)', rain: 'linear-gradient(135deg,#7EA6E0,#4F5FC4)', nature: 'linear-gradient(135deg,#8DD3B0,#3FA07A)', white: 'linear-gradient(135deg,#B9B2CC,#6B6383)', instrumental: 'linear-gradient(135deg,#F2B37A,#C46BD6)', piano: 'linear-gradient(135deg,#4A3F6B,#1D1730)', cafe: 'linear-gradient(135deg,#D9A273,#8A5A3C)', ocean: 'linear-gradient(135deg,#6FC3E0,#2F6FB8)', forest: 'linear-gradient(135deg,#7CC48F,#2E6B45)', fav: 'linear-gradient(135deg,#F59AC0,#d397fa)' };
   function musicList(cat) {
     if (cat === 'fav') return S.music.favorites.map((id) => CadenceAudio.findTrack(id)).filter(Boolean);
@@ -1061,8 +1319,9 @@ window.CadenceStore.ready.then(() => {
       <div class="prog-row">${icon('i-volume')}<input type="range" class="range js-mp-vol" min="0" max="100" value="${Math.round(S.music.volume * 100)}" aria-label="Volume"><span class="js-mp-volv">${Math.round(S.music.volume * 100)}%</span></div>
       ${compact ? `<label class="field"><span class="sr-only">Category</span><select class="select" data-action-change="musicCat">${cats.map(([v, l]) => `<option value="${v}" ${cat === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`
         : `<div class="cat-scroll">${cats.map(([v, l]) => `<button class="pill" data-action="musicCat" data-id="${v}" aria-pressed="${cat === v}">${l}</button>`).join('')}</div>
-      <div class="track-list">${list.length ? list.map((t) => `<button class="track ${cur && cur.id === t.id ? 'active' : ''}" data-action="musicPlay" data-id="${t.id}"><span class="tn">${esc(t.title)}</span>${S.music.favorites.includes(t.id) ? `<span class="fav">${icon('i-heart-fill')}</span>` : ''}<span class="tl">${fmtSec(t.length)}</span></button>`).join('') : `<p class="small muted" style="padding:8px">No favorites yet — tap the heart on a track you like.</p>`}</div>`}
-      <p class="tiny muted">All tracks are generated live on your device — royalty-free and offline. Music keeps playing when you leave the app.</p>
+      <div class="track-list">${list.length ? list.map((t) => `<div class="track-row"><button class="track ${cur && cur.id === t.id ? 'active' : ''}" data-action="musicPlay" data-id="${t.id}"><span class="tn">${esc(t.title)}${t.file ? ' <span class="chip">yours</span>' : ''}</span>${S.music.favorites.includes(t.id) ? `<span class="fav">${icon('i-heart-fill')}</span>` : ''}<span class="tl">${t.length ? fmtSec(t.length) : ''}</span></button>${t.file ? `<button class="icon-btn sm" data-action="removeUpload" data-id="${t.id}" aria-label="Remove ${esc(t.title)}">${icon('i-trash')}</button>` : ''}</div>`).join('') : `<p class="small muted" style="padding:8px">${cat === 'fav' ? 'No favorites yet — tap the heart on a track you like.' : 'No tracks here yet — upload your own music below.'}</p>`}</div>
+      <button class="btn btn-soft btn-sm" data-action="uploadMusic" style="align-self:flex-start">${icon('i-plus')}Upload music</button>`}
+      <p class="tiny muted">Built-in tracks are generated on your device. Music keeps playing when you leave the app, with controls in your notifications.</p>
     </div>`;
   }
   function renderMusic() {
@@ -1109,7 +1368,10 @@ window.CadenceStore.ready.then(() => {
     ['Begin anywhere.', 'John Cage'],
     ['Energy flows where attention goes.', 'Proverb'],
   ];
-  function greeting() { const h = new Date().getHours(); return h < 5 ? 'Good night' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : h < 22 ? 'Good evening' : 'Good night'; }
+  function greeting() { const h = new Date().getHours(); return h >= 5 && h < 12 ? 'Good morning' : h >= 12 && h < 17 ? 'Good afternoon' : 'Good evening'; }
+  // Focus time today including the session running now (the phone widgets count it the same way).
+  const liveFocusMs = () => (S.timer.phase === 'focus' && S.timer.status !== 'idle' ? Math.max(0, elapsedMs()) : 0);
+  const focusToday = () => { const sod = startOfDay(new Date()).getTime(); return focusMsBetween(sod, sod + DAY) + liveFocusMs(); };
 
   function taskMiniHTML(t, showWhen = 'schedule') {
     const when = showWhen === 'due' && t.due ? `Due ${fmtWhen(t.due)}` : isScheduled(t) ? fmtRange(t.start, t.end) : t.due ? `Due ${fmtWhen(t.due)}` : t.category;
@@ -1142,7 +1404,7 @@ window.CadenceStore.ready.then(() => {
       const today = new Date(); const sod = startOfDay(today).getTime();
       const list = S.tasks.filter((t) => touchesDay(t, today) || (t.completedAt && t.completedAt >= sod));
       const done = list.filter((t) => t.status === 'completed');
-      const fm = focusMsBetween(sod, sod + DAY); const goal = S.settings.goals.dailyFocusMin;
+      const fm = focusToday(); const goal = S.settings.goals.dailyFocusMin;
       const pct = list.length ? Math.round((done.length / list.length) * 100) : 0;
       return { title: 'Daily Progress', icon: 'i-check', body: `
         <div><div class="row between small"><span>Tasks done</span><b>${done.length} / ${list.length}</b></div><div class="progress" style="margin-top:6px"><span style="width:${pct}%"></span></div></div>
@@ -1151,7 +1413,7 @@ window.CadenceStore.ready.then(() => {
     },
     weekly: () => {
       const ws = weekStartOf(new Date()); const goal = S.settings.goals.dailyFocusMin * MIN;
-      const days = Array.from({ length: 7 }, (_, i) => { const d = addDays(ws, i); const a = d.getTime(); return { d, ms: focusMsBetween(a, a + DAY), today: dayKey(d) === dayKey(new Date()) }; });
+      const days = Array.from({ length: 7 }, (_, i) => { const d = addDays(ws, i); const a = d.getTime(); const today = dayKey(d) === dayKey(new Date()); return { d, ms: focusMsBetween(a, a + DAY) + (today ? liveFocusMs() : 0), today }; });
       const total = days.reduce((a, x) => a + x.ms, 0); const tasks = tasksDoneBetween(ws.getTime(), ws.getTime() + 7 * DAY);
       const max = Math.max(goal, ...days.map((x) => x.ms));
       return { title: 'Weekly Productivity', icon: 'i-stats', link: ['Insights', 'goInsights'], body: `
@@ -1191,6 +1453,36 @@ window.CadenceStore.ready.then(() => {
     },
   };
 
+  // Descriptions shown in the widget gallery (and which of them exist as phone home-screen widgets).
+  const WIDGET_INFO = {
+    pomodoro: ['i-focus', 'Start, pause and skip sessions', 'timer'], today: ['i-tasks', 'What’s on today, tick tasks off', 'today'],
+    upnext: ['i-cal', 'Your next scheduled tasks', 'upcoming'], progress: ['i-check', 'Tasks done and daily focus goal', 'progress'],
+    deadlines: ['i-flag', 'Due dates, soonest first', 'deadlines'], weekly: ['i-stats', 'Focus time for each day this week', 'weekly'],
+    streak: ['i-flame', 'Days in a row with a focus session', 'streak'], music: ['i-music', 'Play and switch focus music', 'music'],
+    minical: ['i-cal', 'This month at a glance', 'calendar'], screenbreak: ['i-eye', 'When your next screen break is due', 'screen'],
+    quote: ['i-quote', 'A new quote every day', 'quote'],
+  };
+  function openWidgetGallery() {
+    const draw = () => Object.keys(ALL_WIDGETS).map((id) => {
+      const on = !S.widgets.hidden.includes(id) && S.widgets.order.includes(id); const [ic, desc] = WIDGET_INFO[id];
+      return `<div class="wg-item"><span class="wg-ic">${icon(ic)}</span><div class="wg-meta"><b>${esc(ALL_WIDGETS[id])}</b><span>${esc(desc)}</span></div>
+        <div class="wg-acts"><button class="btn btn-sm ${on ? 'btn-ghost' : 'btn-primary'}" data-wg="${on ? 'remove' : 'add'}" data-id="${id}">${on ? icon('i-check') + 'Added' : icon('i-plus') + 'Add'}</button>
+        ${Device.isNative ? `<button class="btn btn-sm btn-soft" data-wg="pin" data-id="${id}">Add to phone</button>` : ''}</div></div>`;
+    }).join('');
+    const m = openModal({ title: 'Widgets', id: 'widget-gallery', body: `<p class="small muted">Add widgets to your Cadence home, or put them on your phone’s home screen.</p><div class="wg-list">${draw()}</div>`,
+      foot: '<button class="btn btn-primary" data-close>Done</button>' });
+    m.el.querySelector('.wg-list').addEventListener('click', async (e) => {
+      const b = e.target.closest('[data-wg]'); if (!b) return; const id = b.dataset.id;
+      if (b.dataset.wg === 'add') { S.widgets.hidden = S.widgets.hidden.filter((w) => w !== id); S.widgets.order = S.widgets.order.filter((w) => w !== id).concat(id); save('widgets'); }
+      else if (b.dataset.wg === 'remove') { S.widgets.hidden.push(id); S.widgets.order = S.widgets.order.filter((w) => w !== id); save('widgets'); }
+      else if (b.dataset.wg === 'pin') {
+        const r = await Device.pinWidget(WIDGET_INFO[id][2]);
+        if (!r || !r.supported) toast('Add it from your home screen', 'Touch and hold an empty spot on your home screen, tap Widgets, then find Cadence.', '', { timeout: 6000 });
+        return;
+      }
+      m.el.querySelector('.wg-list').innerHTML = draw(); renderHome();
+    });
+  }
   function renderHome() {
     const now = new Date(); const sod = startOfDay(now).getTime();
     $('#heroDate').textContent = now.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
@@ -1198,7 +1490,7 @@ window.CadenceStore.ready.then(() => {
     const todays = S.tasks.filter((t) => touchesDay(t, now) && t.status !== 'completed');
     const next = S.tasks.filter((t) => t.status !== 'completed' && isScheduled(t) && tms(t.start) > Date.now()).sort((a, b) => tms(a.start) - tms(b.start))[0];
     $('#heroSummary').textContent = todays.length ? `${todays.length} task${todays.length > 1 ? 's' : ''} on today's plan${next && dayKey(next.start) === dayKey(now) ? ` — next up: ${next.title} at ${fmtTime(next.start)}` : ''}.` : 'A clear day. Add a task or start a focus session when you are ready.';
-    const fm = focusMsBetween(sod, sod + DAY); const doneToday = tasksDoneBetween(sod, sod + DAY);
+    const fm = focusToday(); const doneToday = tasksDoneBetween(sod, sod + DAY);
     $('#summaryRow').innerHTML = [
       ['Focus today', fmtDur(fm), `/ ${S.settings.goals.dailyFocusMin}m`], ['Sessions', sessionsBetween(sod, sod + DAY), ''], ['Tasks done', doneToday, `/ ${doneToday + todays.length}`], ['Streak', streak(), streak() === 1 ? 'day' : 'days'],
     ].map(([l, v, s]) => `<div class="summary-tile"><div class="label">${l}</div><div class="value">${v}<small>${s}</small></div></div>`).join('');
@@ -1212,10 +1504,11 @@ window.CadenceStore.ready.then(() => {
       return `<div class="card widget ${['weekly'].includes(id) ? '' : ''}" data-widget="${id}" ${ui.editingWidgets ? 'draggable="true"' : ''}>
         ${ui.editingWidgets ? `<div class="widget-edit-bar"><button class="icon-btn sm" data-action="wMove" data-id="${id}" data-dir="-1" aria-label="Move ${ALL_WIDGETS[id]} up" ${i === 0 ? 'disabled' : ''}>${icon('i-up')}</button><button class="icon-btn sm" data-action="wMove" data-id="${id}" data-dir="1" aria-label="Move ${ALL_WIDGETS[id]} down" ${i === visible.length - 1 ? 'disabled' : ''}>${icon('i-down')}</button><button class="icon-btn sm" data-action="wHide" data-id="${id}" aria-label="Remove ${ALL_WIDGETS[id]}">${icon('i-x')}</button></div>` : ''}
         <div class="widget-head"><h3>${icon(w.icon)}${esc(w.title)}</h3>${w.link && !ui.editingWidgets ? `<button class="widget-link" data-action="${w.link[1]}">${esc(w.link[0])}</button>` : ''}</div>${w.body}</div>`;
-    }).join('') + (ui.editingWidgets ? `<div class="card widget" style="grid-column:1/-1;min-height:0"><div class="widget-head"><h3>${icon('i-grid')}Available widgets</h3></div>
-      ${S.widgets.hidden.length ? `<div class="pill-group">${S.widgets.hidden.map((w) => `<button class="pill" data-action="wShow" data-id="${w}">${icon('i-plus')} ${ALL_WIDGETS[w]}</button>`).join('')}</div>` : '<p class="small muted">All widgets are on your dashboard. Remove one with ✕, reorder with the arrows or by dragging.</p>'}
+    }).join('') + (ui.editingWidgets ? `<div class="card widget" style="grid-column:1/-1;min-height:0"><div class="widget-head"><h3>${icon('i-grid')}Arrange your dashboard</h3></div>
+      <p class="small muted">Reorder with the arrows, remove with ✕, or add more widgets.</p>
+      <button class="btn btn-primary btn-sm" data-action="openWidgetGallery" style="align-self:flex-start">${icon('i-plus')}Add widgets</button>
       <button class="btn btn-ghost btn-sm" data-action="wReset" style="align-self:flex-start">Reset layout</button></div>` : '')
-      + (!visible.length && !ui.editingWidgets ? `<div class="card" style="grid-column:1/-1">${emptyState('i-grid', 'No widgets', 'Tap Customize to add widgets to your dashboard.')}</div>` : '');
+      + (!visible.length && !ui.editingWidgets ? `<div class="card widgets-empty" style="grid-column:1/-1">${emptyState('i-grid', 'Make this space yours', 'Add the widgets you want here — timer, today’s tasks, progress, music and more.', `<button class="btn btn-primary btn-sm" data-action="customizeWidgets">${icon('i-plus')}Add widgets</button>`)}</div>` : '');
     renderMusic(); renderLive(false); lastCtrlSig = ''; renderLive(false);
   }
   function renderActiveCard() {
@@ -1360,28 +1653,24 @@ window.CadenceStore.ready.then(() => {
       <div class="focus-status">
         <span class="chip ${fm ? 'chip-accent' : ''}">${fm ? '● Focus Mode on' : 'Focus Mode off'}</span>
         <span class="chip ${isBreak ? 'chip-warn' : ''}">${PHASE_LABEL[t.phase]}${t.status === 'paused' ? ' · paused' : t.status === 'idle' ? ' · ready' : ''}</span>
-        <span class="chip ${dnd ? 'chip-accent' : ''}">${icon('i-moon')}Do Not Disturb ${dnd ? 'on' : 'off'}</span>
       </div>
       <div class="focus-task"><div class="k">Current task</div><div class="v">${tk ? esc(tk.title) : 'No task selected'}</div>${tk && (tk.focusMs || tk.actualMs) ? `<div class="small muted">${fmtDur(tk.focusMs)} focused on this task${tk.estimate ? ` · est. ${fmtDur(tk.estimate * MIN)}` : ''}</div>` : ''}</div>
-      <div class="row" style="justify-content:center">${ringHTML(Math.min(260, Math.min(window.innerWidth, 480) - 90), 14)}</div>
+      <div class="row" style="justify-content:center">${ringHTML(Math.min(200, Math.min(window.innerWidth, 480) - 150), 11)}</div>
       <div class="session-dots js-t-dots" aria-label="Sessions in this cycle"></div>
       <p class="small muted" style="text-align:center">Session ${(t.cycle % S.settings.pomodoro.interval) + (t.phase === 'focus' ? 1 : 0) || S.settings.pomodoro.interval} of ${S.settings.pomodoro.interval} · long break after every ${S.settings.pomodoro.interval} · ${sessionsBetween(startOfDay(new Date()).getTime(), Date.now() + 1)} completed today</p>
       <div class="timer-controls js-t-ctrl"></div>
+      <div class="focus-toggles">
+        <div class="set-row"><div class="lbl"><b>${icon('i-moon')}Do Not Disturb</b><span>${dnd ? 'On — your phone is silenced' : isBreak && fm && dndOn(S.focus.dnd) ? 'Off for the break' : 'Silences your phone during focus'}</span></div><div class="ctl">${sw('data-action-change="focusDnd"', dndOn(fm ? S.focus.dnd : S.settings.focusMode.dnd))}</div></div>
+        <div class="set-row"><div class="lbl"><b>${icon('i-lock')}Lock other apps</b><span>${allowedCount()} allowed app${allowedCount() === 1 ? '' : 's'} · <button type="button" class="widget-link" data-action="chooseApps">Choose</button></span></div><div class="ctl">${sw('data-action-change="focusLock"', lockOn(fm ? S.focus.lockApps : S.settings.focusMode.lockApps))}</div></div>
+      </div>
       ${isBreak && t.status !== 'idle' ? `<div class="break-suggest">${icon('i-moon')}<div><b>Break time — rest away from the screen</b>${esc(randomSuggestion())}${fm && S.focus.dnd ? '<br><span class="small">Do Not Disturb is off during the break.</span>' : ''}</div></div>` : ''}
       ${fm && isBreak ? `<div class="set-row" style="padding:0;border:0"><div class="lbl"><b>Resume Focus Mode after the break?</b><span>We will ask when the break ends; your previous settings are kept.</span></div><div class="ctl">${sw('data-action-change="resumeAfterBreak"', S.focus.resumeAfterBreak)}</div></div>` : ''}
       <div class="row wrap" style="justify-content:center">
         ${fm ? `<button class="btn btn-ghost" data-action="openFocusSetup">${icon('i-sliders')}Modify focus settings</button><button class="btn btn-danger-ghost" data-action="endFocus">End focus session</button>`
           : `<button class="btn btn-primary btn-lg" data-action="openFocusSetup">${icon('i-focus')}Set up Focus Mode</button>`}
       </div>
-      ${!fm ? '<p class="small muted" style="text-align:center">Focus Mode adds a task, music and Do Not Disturb on top of the Pomodoro timer. You can also just press Start to run a plain Pomodoro.</p>' : ''}`;
-    const active = Device.isNative && devStatus.dndActive;
-    $('#focusDevice').innerHTML = `
-      <div class="widget-head" style="margin-bottom:10px"><h3>${icon('i-moon')}Do Not Disturb</h3><span class="chip ${active ? 'chip-accent' : ''}">${active ? 'On' : 'Off'}</span></div>
-      <p class="small muted">${!S.focus.dnd && fm ? 'Off for this Focus Mode run. Turn it on in Modify focus settings.' : 'Turns on automatically during focus sessions and back off for breaks, so calls and notifications don’t pull you away.'}</p>
-      ${dndAccessNote()}
-      <div class="field" style="margin-top:12px"><span class="field-label">Still allowed during focus</span>
-        <div class="app-toggle-list">${DND_ALLOW.map((a) => `<label class="app-toggle"><input type="checkbox" data-action-change="allowToggle" data-id="${a.id}" ${S.focus.allow[a.id] ? 'checked' : ''}>${icon(a.icon)}${a.name}</label>`).join('')}</div>
-        <span class="field-hint">Alarms and media always play. Changes apply right away.</span></div>`;
+      ${!fm ? '<p class="small muted" style="text-align:center">Focus Mode adds a task, music, Do Not Disturb and app lock on top of the Pomodoro timer. You can also just press Start to run a plain Pomodoro.</p>' : ''}`;
+    $('#focusDevice').hidden = true;
     $('#focusMusicCard').innerHTML = `<div class="widget-head" style="margin-bottom:10px"><h3>${icon('i-music')}Focus music</h3></div><div class="js-music"></div>`;
     renderMusic(); lastCtrlSig = ''; renderLive(false);
   }
@@ -1400,9 +1689,8 @@ window.CadenceStore.ready.then(() => {
     const avgSession = fs.length ? focusMs / fs.length : 0;
     const daysElapsed = Math.max(1, Math.ceil((Math.min(b, startOfDay(now).getTime() + DAY) - a) / DAY));
     $('#statGrid').innerHTML = [
-      ['Focus time', fmtDur(focusMs)], ['Pomodoros completed', completed.length], ['Tasks completed', doneTasks], ['Pending tasks', pending],
-      ['Overdue tasks', overdue], ['Avg. session', fs.length ? fmtDur(avgSession) : '—'], ['Focus streak', `${streak()} d`], ['Screen breaks', eyeDone],
-      ['Completion rate', totalTasks ? rate + '%' : '—'], ['Avg. daily focus', fmtDur(focusMs / daysElapsed)], ['Best streak', `${bestStreak()} d`], ['Total sessions (all)', focusSessions().filter((s) => s.completed).length],
+      ['Focus time', fmtDur(focusMs)], ['Tasks completed', doneTasks], ['Pending tasks', pending], ['Overdue tasks', overdue],
+      ['Avg. session', fs.length ? fmtDur(avgSession) : '—'], ['Focus streak', `${streak()} d`], ['Completion rate', totalTasks ? rate + '%' : '—'], ['Avg. daily focus', fmtDur(focusMs / daysElapsed)],
     ].map(([l, v]) => `<div class="stat"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('');
     // insights from real activity
     const allFs = focusSessions();
@@ -1417,7 +1705,6 @@ window.CadenceStore.ready.then(() => {
       ['i-focus', 'Focus this week', fmtDur(focusMsBetween(ws, we))],
       ['i-check', 'Tasks completed', `${S.tasks.filter((t) => t.status === 'completed').length} all time · ${tasksDoneBetween(ws, we)} this week`],
       ['i-stats', 'Average daily focus', has ? `${fmtDur(focusMs / daysElapsed)} (${{ day: 'today', week: 'this week', month: 'this month', all: 'all time' }[ui.statRange]})` : 'Not enough activity yet'],
-      ['i-eye', 'Screen breaks', `${S.eyeLog.filter((e) => e.action === 'completed').length} taken · ${S.eyeLog.filter((e) => e.action === 'skipped').length} skipped`],
     ];
     $('#insightList').innerHTML = `<div class="widget-head" style="margin-bottom:10px"><h3>${icon('i-stats')}Insights</h3><span class="tiny muted">Based only on your recorded activity</span></div><div class="insight-list">${ins.map(([ic, k, v]) => `<div class="insight"><div class="ic">${icon(ic)}</div><div><div class="k">${k}</div><div class="v">${esc(v)}</div></div></div>`).join('')}</div>`;
     renderCharts();
@@ -1429,13 +1716,6 @@ window.CadenceStore.ready.then(() => {
       ${goalRow('Daily focus goal', dayMs, g.dailyFocusMin * MIN, `${fmtDur(dayMs)} / ${fmtDur(g.dailyFocusMin * MIN)}`)}
       ${goalRow('Weekly focus goal', weekMs, g.weeklyFocusHours * HOUR, `${fmtDur(weekMs)} / ${g.weeklyFocusHours}h`)}
       ${goalRow('Weekly tasks goal', weekTasks, g.weeklyTasks, `${weekTasks} / ${g.weeklyTasks}`)}`;
-    const got = ACH.filter((x) => S.ach[x.id]).length;
-    $('#achievementsCard').innerHTML = `<div class="widget-head"><h3>${icon('i-trophy')}Milestones</h3><span class="small muted">${got} of ${ACH.length}</span></div>
-      <div class="ach-grid">${ACH.map((x) => `<div class="ach ${S.ach[x.id] ? 'got' : ''}"><div class="ic">${icon(x.icon)}</div><div class="n">${esc(x.name)}</div><div class="d">${S.ach[x.id] ? 'Earned ' + esc(fmtDay(S.ach[x.id], { month: 'short', day: 'numeric' })) : esc(x.desc)}</div></div>`).join('')}</div>`;
-    const log = S.eyeLog.slice(-12).reverse();
-    $('#screenBreakHistoryCard').innerHTML = `<div class="widget-head"><h3>${icon('i-eye')}Screen break history</h3><span class="small muted">${S.eyeLog.length} total records</span></div>
-      <div class="row wrap small" style="margin-top:8px;gap:14px"><span>Completed: <b>${S.eyeLog.filter((e) => e.action === 'completed').length}</b></span><span>Skipped: <b>${S.eyeLog.filter((e) => e.action === 'skipped').length}</b></span><span>Postponed: <b>${S.eyeLog.filter((e) => e.action === 'postponed').length}</b></span><span>Rest time: <b>${fmtDur(S.eyeLog.filter((e) => e.action === 'completed').reduce((x, e) => x + (e.ms || 0), 0))}</b></span></div>
-      ${log.length ? `<table class="hist-table"><thead><tr><th>When</th><th>Result</th><th>Duration</th></tr></thead><tbody>${log.map((e) => `<tr><td>${esc(fmtWhen(e.ts))}</td><td><span class="chip ${e.action === 'completed' ? 'chip-ok' : e.action === 'skipped' ? 'chip-danger' : 'chip-warn'}">${e.action}</span></td><td>${e.action === 'completed' ? Math.round((e.ms || 0) / 1000) + 's' : e.action === 'postponed' ? `+${e.minutes || S.settings.screenBreak.postponeMin} min` : '—'}</td></tr>`).join('')}</tbody></table>` : emptyState('i-eye', 'No screen breaks yet', 'Your completed, skipped and postponed breaks will be listed here.')}`;
   }
   function renderCharts() {
     if (!window.Chart) { $$('.chart-wrap').forEach((w) => (w.innerHTML = '<div class="chart-empty">Charts could not load (Chart.js missing).</div>')); return; }
@@ -1480,19 +1760,28 @@ window.CadenceStore.ready.then(() => {
   const num = (path, min, max, step = 1) => `<div class="stepper"><button type="button" data-step="${path}" data-d="-${step}" aria-label="Decrease">−</button><input type="number" inputmode="numeric" data-setting="${path}" data-num min="${min}" max="${max}" step="${step}" value="${getPath(path)}" aria-label="${path.split('.').pop()}"><button type="button" data-step="${path}" data-d="${step}" aria-label="Increase">+</button></div>`;
   const sel = (path, opts, isNumVal) => `<select class="select" data-setting="${path}" ${isNumVal ? 'data-num' : ''}>${opts.map(([v, l]) => `<option value="${v}" ${String(getPath(path)) === String(v) ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
   const SETTINGS_SECTIONS = [
-    { group: 'Personalize', id: 'appearance', title: 'Appearance', icon: 'i-moon', color: '#8364e8', sum: () => ({ system: 'Match device', light: 'Light', dark: 'Dark' }[S.settings.general.theme]) },
-    { group: 'Personalize', id: 'general', title: 'General', icon: 'i-settings', color: '#6B6383', sum: () => `${S.settings.general.timeFormat}-hour · week starts ${['Sunday', 'Monday', '', '', '', '', 'Saturday'][S.settings.general.weekStart]} · sounds ${S.settings.general.sounds ? 'on' : 'off'}` },
+    { group: 'Personalize', id: 'appearance', title: 'Appearance', icon: 'i-moon', color: '#6A4BD8', sum: () => ({ system: 'Match device', light: 'Light', dark: 'Dark' }[S.settings.general.theme]) },
+    { group: 'Personalize', id: 'general', title: 'General', icon: 'i-settings', color: '#8364E8', sum: () => `${S.settings.general.timeFormat}-hour · week starts ${['Sunday', 'Monday', '', '', '', '', 'Saturday'][S.settings.general.weekStart]} · sounds ${S.settings.general.sounds ? 'on' : 'off'}` },
     { group: 'Focus', id: 'pomodoro', title: 'Pomodoro timer', icon: 'i-clock', color: '#6A4BD8', sum: () => { const p = S.settings.pomodoro; return `${p.focus} / ${p.short} / ${p.long} min · long break every ${p.interval}`; } },
-    { group: 'Focus', id: 'focus', title: 'Focus Mode', icon: 'i-lock', color: '#9B6BE8', sum: () => `Do Not Disturb ${S.settings.focusMode.dnd ? 'on' : 'off'} · ${S.settings.focusMode.defaultDuration} min sessions` },
-    { group: 'Focus', id: 'screen', title: 'Screen breaks', icon: 'i-eye', color: '#B06CE6', sum: () => S.settings.screenBreak.enabled ? `Every ${S.settings.screenBreak.interval} min · ${S.settings.screenBreak.duration >= 60 ? fmtDur(S.settings.screenBreak.duration * 1000) : S.settings.screenBreak.duration + ' s'}` : 'Off' },
-    { group: 'Focus', id: 'breaks', title: 'Break suggestions', icon: 'i-quote', color: '#C784F2', sum: () => `${S.settings.breakSuggestions.length} ideas` },
-    { group: 'Focus', id: 'music', title: 'Music', icon: 'i-music', color: '#d397fa', sum: () => { const c = CadenceAudio.library.find((x) => x.id === S.settings.music.category); return `${c ? c.name : ''} · ${Math.round(S.settings.music.volume * 100)}%`; } },
-    { group: 'Alerts & goals', id: 'notifications', title: 'Notifications', icon: 'i-bell', color: '#D6455D', sum: () => `${Object.values(S.settings.notifications.categories).filter(Boolean).length} of ${Object.keys(NOTIF_CATS).length} types on${notifPerm() === 'granted' || notifPerm() === 'unavailable' ? '' : ' · blocked by system'}` },
-    { group: 'Alerts & goals', id: 'goals', title: 'Goals', icon: 'i-trophy', color: '#D18F1F', sum: () => `${S.settings.goals.dailyFocusMin} min a day · ${S.settings.goals.weeklyFocusHours} h a week` },
-    { group: 'Data', id: 'data', title: 'Data & storage', icon: 'i-grid', color: '#3FA07A', sum: () => `${S.tasks.length} tasks · ${S.sessions.length} sessions` },
-    { group: 'Data', id: 'about', title: 'About Cadence', icon: 'i-focus', color: '#5E3FD0', sum: () => 'Widgets, privacy, version' },
+    { group: 'Focus', id: 'focus', title: 'Focus Mode', icon: 'i-lock', color: '#8364E8', sum: () => `Do Not Disturb ${dndOn(S.settings.focusMode.dnd) ? 'on' : 'off'} · app lock ${lockOn(S.settings.focusMode.lockApps) ? 'on' : 'off'}` },
+    { group: 'Focus', id: 'screen', title: 'Screen breaks', icon: 'i-eye', color: '#9B6BE8', sum: () => S.settings.screenBreak.enabled ? `Every ${S.settings.screenBreak.interval} min · ${S.settings.screenBreak.duration >= 60 ? fmtDur(S.settings.screenBreak.duration * 1000) : S.settings.screenBreak.duration + ' s'}` : 'Off' },
+    { group: 'Focus', id: 'breaks', title: 'Break suggestions', icon: 'i-quote', color: '#B07FEF', sum: () => `${S.settings.breakSuggestions.length} ideas` },
+    { group: 'Focus', id: 'music', title: 'Music', icon: 'i-music', color: '#C68CF5', sum: () => { const c = CadenceAudio.library.find((x) => x.id === S.settings.music.category); return `${c ? c.name : ''} · ${Math.round(S.settings.music.volume * 100)}%`; } },
+    { group: 'Alerts & goals', id: 'permissions', title: 'Permissions', icon: 'i-lock', color: '#5E3FD0', sum: () => { const n = permList().filter((p) => p.on).length; return `${n} of ${permList().length} allowed`; } },
+    { group: 'Alerts & goals', id: 'notifications', title: 'Notifications', icon: 'i-bell', color: '#6A4BD8', sum: () => `${Object.values(S.settings.notifications.categories).filter(Boolean).length} of ${Object.keys(NOTIF_CATS).length} types on${notifPerm() === 'granted' || notifPerm() === 'unavailable' ? '' : ' · blocked by system'}` },
+    { group: 'Alerts & goals', id: 'goals', title: 'Goals', icon: 'i-trophy', color: '#8364E8', sum: () => `${S.settings.goals.dailyFocusMin} min a day · ${S.settings.goals.weeklyFocusHours} h a week` },
+    { group: 'Data', id: 'data', title: 'Data & storage', icon: 'i-grid', color: '#5E3FD0', sum: () => `${S.tasks.length} tasks · ${S.sessions.length} sessions` },
+    { group: 'Data', id: 'about', title: 'About Cadence', icon: 'i-focus', color: '#441C72', sum: () => 'Widgets, privacy, version' },
   ];
   const sectionById = (id) => SETTINGS_SECTIONS.find((x) => x.id === id);
+  // System permissions, each shown as a switch that opens the matching Android settings page.
+  const permList = () => [
+    { id: 'notifications', title: 'Notifications', desc: 'Reminders, timers and screen breaks when Cadence is closed', on: notifPerm() === 'granted' },
+    { id: 'fullScreen', title: 'Full-screen alerts', desc: 'Wake the screen when a focus session or break ends', on: !!devStatus.fullScreen },
+    { id: 'overlay', title: 'Display over other apps', desc: 'Show alerts and the app lock over whatever is open', on: !!devStatus.overlay },
+    { id: 'usage', title: 'Usage access', desc: 'See which app is open, to lock apps during focus', on: !!devStatus.usageAccess },
+    { id: 'dnd', title: 'Do Not Disturb access', desc: 'Silence your phone during focus sessions', on: !!devStatus.dndAccess },
+  ];
   function openSettingsSection(id) {
     if (ui.screen !== 'settings') go('settings');
     ui.settingsSection = id; pushNav(); applyChrome(); renderSettings(true); window.scrollTo(0, 0);
@@ -1555,15 +1844,23 @@ window.CadenceStore.ready.then(() => {
       case 'focus': return `
         <div class="set-group">
           ${row('Default focus duration', 'Minutes', num('focusMode.defaultDuration', 1, 240, 5))}
-          ${row('Do Not Disturb during focus', 'Silences your phone while a focus session runs and turns off for breaks', tog('focusMode.dnd'))}
-          ${Device.isNative && !devStatus.dndAccess ? row('System access', 'Needed to switch Do Not Disturb on and off', '<button class="btn btn-primary btn-sm" data-action="dndAccess">Allow</button>') : ''}
           ${row('Start music with Focus Mode', '', tog('focusMode.autoMusic'))}
           ${row('Track working time', 'Focus sessions count toward a task’s actual time', tog('focusMode.trackWork'))}
         </div>
-        <div class="set-group"><h3>Still allowed during focus</h3>
-          <div class="set-row col"><div class="app-toggle-list">${DND_ALLOW.map((a) => `<label class="app-toggle"><input type="checkbox" data-setting="focusMode.allow.${a.id}" ${s.focusMode.allow[a.id] ? 'checked' : ''}>${icon(a.icon)}${a.name}</label>`).join('')}</div>
-          <span class="small muted">Alarms and media always play. Everything else waits until your break.</span></div>
+        <div class="set-group"><h3>App lock</h3>
+          ${row('Lock other apps during focus', 'Apps you haven’t allowed show a lock screen until your break', sw('data-action-change="lockDefault"', lockOn(s.focusMode.lockApps)))}
+          ${row('Allowed apps', `${allowedCount()} app${allowedCount() === 1 ? '' : 's'} stay usable · calls, Settings and Cadence always do`, '<button class="btn btn-soft btn-sm" data-action="chooseApps">Choose</button>')}
+        </div>
+        <div class="set-group"><h3>Do Not Disturb</h3>
+          ${row('Do Not Disturb during focus', 'Silences your phone while a focus session runs and turns off for breaks', sw('data-action-change="dndDefault"', dndOn(s.focusMode.dnd)))}
+          <div class="set-row col"><span class="small muted">Still allowed through Do Not Disturb</span><div class="app-toggle-list">${DND_ALLOW.map((a) => `<label class="app-toggle"><input type="checkbox" data-setting="focusMode.allow.${a.id}" ${s.focusMode.allow[a.id] ? 'checked' : ''}>${icon(a.icon)}${a.name}</label>`).join('')}</div>
+          <span class="small muted">Alarms and media always play.</span></div>
         </div>`;
+      case 'permissions': return `
+        <div class="set-group"><h3>Android permissions</h3>
+          ${permList().map((p) => row(p.title, p.desc, sw(`data-action-change="perm" data-id="${p.id}"`, p.on))).join('')}
+        </div>
+        <p class="small muted" style="padding:0 6px">Each switch opens the matching page in your phone’s settings. Turn it back off there if you change your mind.</p>`;
       case 'screen': return `
         <div class="set-group">
           ${row('Screen break reminders', `Separate from Pomodoro breaks. ${esc(st.text)}.`, tog('screenBreak.enabled'))}
@@ -1600,13 +1897,14 @@ window.CadenceStore.ready.then(() => {
           ${row('Default volume', '', `<input type="range" class="range" style="width:140px" min="0" max="1" step="0.05" data-setting="music.volume" data-num value="${s.music.volume}" aria-label="Default volume">`)}
           ${row('Pause during breaks', 'Resumes with the next focus session', tog('music.pauseOnBreak'))}
         </div>
-        <p class="small muted" style="padding:0 6px">All tracks are generated on your device — royalty-free, available offline, and they keep playing when you leave the app.</p>`;
+        <div class="set-group"><h3>Your music</h3>
+          ${S.music.uploads.length ? S.music.uploads.map((u) => row(esc(u.title), esc(((CadenceAudio.library.find((c) => c.id === u.category) || {}).name || 'My music') + (u.length ? ' · ' + fmtSec(u.length) : '')), `<button class="icon-btn sm" data-action="removeUpload" data-id="${u.id}" aria-label="Remove ${esc(u.title)}">${icon('i-trash')}</button>`)).join('') : '<div class="set-row"><span class="small muted">Upload your own tracks and pick the category they belong to.</span></div>'}
+          <div class="set-row"><button class="btn btn-soft" data-action="uploadMusic">${icon('i-plus')}Upload music</button></div>
+        </div>
+        <p class="small muted" style="padding:0 6px">Built-in tracks are generated on your device, royalty-free and offline. Music keeps playing when you leave the app.</p>`;
       case 'notifications': return `
         <div class="set-group"><h3>System notifications</h3>
-          ${Device.isNative ? row('Notifications', p === 'granted' ? 'On — alerts reach you even when Cadence is closed' : p === 'prompt' ? 'Not allowed yet — alerts only appear while Cadence is open' : 'Turned off in system settings — alerts only appear while Cadence is open',
-            p === 'granted' ? '<span class="chip chip-ok">On</span>' : `<button class="btn btn-primary btn-sm" data-action="${p === 'prompt' ? 'askNotif' : 'openNotifSettings'}">Turn on</button>`) : ''}
-          ${Device.isNative ? row('On-time alerts', devStatus.exactAlarms ? 'Timers and reminders fire exactly on time' : 'Without “Alarms & reminders” access Android may deliver alerts a few minutes late',
-            devStatus.exactAlarms ? '<span class="chip chip-ok">On</span>' : '<button class="btn btn-primary btn-sm" data-action="exactAlarms">Allow</button>') : ''}
+          ${Device.isNative ? row('Notifications', p === 'granted' ? 'Alerts reach you even when Cadence is closed' : 'Off — alerts only appear while Cadence is open', sw('data-action-change="perm" data-id="notifications"', p === 'granted')) : ''}
           ${row('In-app sounds', 'Chimes while Cadence is open', tog('notifications.sound'))}
           ${Device.isNative ? row('Sound, vibration & channels', 'Fine-tune each kind of alert in system settings', '<button class="btn btn-ghost btn-sm" data-action="openNotifSettings">Open</button>') : ''}
         </div>
@@ -1625,16 +1923,14 @@ window.CadenceStore.ready.then(() => {
         </div>
         <p class="small muted" style="padding:0 6px">Goals are just gentle markers — progress shows on the dashboard and in Insights.</p>`;
       case 'data': {
-        const used = Store.keys().filter((k) => k.startsWith(NS)).reduce((n, k) => n + (Store.get(k) || '').length, 0);
         return `
-        <div class="set-group"><h3>Stored on this device</h3>
-          ${row('Stored data', `${S.tasks.length} tasks · ${S.sessions.length} sessions · ${S.eyeLog.length} screen-break records · ${S.notifs.length} notifications · ~${(used / 1024).toFixed(1)} KB`, '')}
+        <div class="set-group"><h3>Backup</h3>
           <div class="set-row"><button class="btn btn-ghost" style="flex:1" data-action="viewData">View data</button><button class="btn btn-ghost" style="flex:1" data-action="exportData">Back up</button><button class="btn btn-ghost" style="flex:1" data-action="importData">Restore</button></div>
           <div class="set-row"><span class="small muted">Back up saves everything to a file you can keep in Files, Drive or email. Restore replaces the data on this device with a backup.</span></div>
         </div>
         <div class="set-group"><h3>Danger zone</h3>
-          ${row('Clear activity history', 'Removes sessions, screen-break history, notifications and achievements. Keeps tasks and settings.', '<button class="btn btn-danger-ghost btn-sm" data-action="clearHistory">Clear</button>')}
-          ${row('Reset application data', 'Deletes everything Cadence stored on this device', '<button class="btn btn-danger btn-sm" data-action="resetAll">Reset</button>')}
+          ${row(`<span class="danger-ic">${icon('i-reset')}</span>Clear activity history`, 'Removes sessions, screen-break history and notifications. Keeps tasks and settings.', `<button class="btn btn-danger-ghost btn-sm" data-action="clearHistory">${icon('i-reset')}Clear</button>`)}
+          ${row(`<span class="danger-ic">${icon('i-trash')}</span>Reset application data`, 'Deletes everything Cadence stored on this device', `<button class="btn btn-danger btn-sm" data-action="resetAll">${icon('i-trash')}Reset</button>`)}
         </div>`;
       }
       case 'about': return `
@@ -1643,7 +1939,7 @@ window.CadenceStore.ready.then(() => {
           ${row('Works offline', 'Cadence needs no internet connection.', '')}
         </div>
         <div class="set-group"><h3>Home-screen widgets</h3>
-          <div class="set-row col"><span class="small">Touch and hold your home screen, tap <b>Widgets</b>, then add <b>Focus timer</b> (start, pause and skip sessions) or <b>Today</b> (your tasks, focus goal and streak — tick tasks off right from the widget).</span></div>
+          <div class="set-row col"><span class="small">Touch and hold your home screen, tap <b>Widgets</b>, then add any Cadence widget: Focus timer, Today, Upcoming schedule, Deadlines, Daily progress, Weekly focus, Focus streak, Mini calendar, Focus music, Screen breaks or Daily quote. They update as soon as anything changes in the app.</span></div>
         </div>
         <div class="set-group"><h3>Privacy</h3>
           <div class="set-row col"><span class="small muted">No account, no server, no tracking. Tasks, sessions and settings are stored only on this device. Use Back up in Data & storage to keep a copy.</span></div>
@@ -1743,7 +2039,12 @@ window.CadenceStore.ready.then(() => {
     if (ui.screen === 'insights') renderCharts();
   }
   if (darkMQ) { if (darkMQ.addEventListener) darkMQ.addEventListener('change', applyTheme); else if (darkMQ.addListener) darkMQ.addListener(applyTheme); }
-  function buzz(pattern) { if (S.settings.general.vibrate && navigator.vibrate) { try { navigator.vibrate(pattern); } catch (e) {} } }
+  function buzz(pattern) {
+    if (!S.settings.general.vibrate) return;
+    const p = Array.isArray(pattern) ? pattern : [pattern];
+    if (Device.isNative) { Device.vibrate(p); return; }
+    if (navigator.vibrate) { try { navigator.vibrate(p); } catch (e) {} }
+  }
   // Android back button: close the top layer first, then step back, then leave the app.
   Device.onBack(() => {
     if (!$('#eyeOverlay').hidden) { postponeEye(); return; }
@@ -1777,7 +2078,8 @@ window.CadenceStore.ready.then(() => {
     musicCat: (el) => { S.music.category = el.dataset.id; save('music'); renderMusic(); },
     musicShuffle: () => { S.music.shuffle = !S.music.shuffle; save('music'); renderMusic(); }, musicRepeat: () => { S.music.repeat = !S.music.repeat; save('music'); renderMusic(); },
     musicStop: () => { CadenceAudio.stop(); renderMusic(); },
-    dndAccess: () => Device.openSettings('dnd'), exactAlarms: () => Device.openSettings('exactAlarms'), openNotifSettings: () => Device.openSettings('notifications'),
+    uploadMusic: () => uploadMusic(), removeUpload: (el) => removeUpload(el.dataset.id),
+    dndAccess: () => needDndAccess(), chooseApps: () => chooseApps(), customizeWidgets: () => openWidgetGallery(), openWidgetGallery: () => openWidgetGallery(), exactAlarms: () => Device.openSettings('exactAlarms'), openNotifSettings: () => Device.openSettings('notifications'),
     eyeDone: () => completeEye(true), eyeSkip: () => skipEye(), eyePostpone: () => postponeEye(),
     eyeSettings: () => { postponeEye(); openSettingsSection('screen'); },
     eyeNow: () => { if (!S.settings.screenBreak.enabled || S.eye.active) return; triggerEye(); },
@@ -1838,6 +2140,16 @@ window.CadenceStore.ready.then(() => {
     timerTask: (el) => { const prev = timerTask(); if (S.timer.phase === 'focus' && S.timer.status === 'running') stopWork(prev, Date.now(), false, 'timer'); S.timer.taskId = el.value || null; if (S.timer.phase === 'focus' && S.timer.status === 'running' && S.settings.focusMode.trackWork) startWork(timerTask(), 'timer'); save('timer'); renderActiveCard(); },
     toggleSub: (el) => { const t = getTask(el.dataset.id); const s = t && t.subtasks.find((x) => x.id === el.dataset.sid); if (s) { s.done = el.checked; if (t.status === 'pending' && s.done) t.status = 'inprogress'; save('tasks'); renderAll(); } },
     musicCat: (el) => { S.music.category = el.value; save('music'); if (CadenceAudio.playing || el.value !== 'fav') playCategory(el.value); else renderMusic(); },
+    dndDefault: (el) => { if (el.checked && Device.isNative && !devStatus.dndAccess) { el.checked = false; needDndAccess(); return; } S.settings.focusMode.dnd = el.checked; if (!S.focus.active) S.focus.dnd = el.checked; save('settings', 'focus'); toastSaved(); },
+    lockDefault: (el) => { if (el.checked && !lockReady()) { el.checked = false; needLockAccess(); return; } S.settings.focusMode.lockApps = el.checked; if (!S.focus.active) S.focus.lockApps = el.checked; save('settings', 'focus'); toastSaved(); },
+    focusDnd: (el) => { if (el.checked && Device.isNative && !devStatus.dndAccess) { el.checked = false; needDndAccess(); return; } if (S.focus.active) S.focus.dnd = el.checked; else { S.settings.focusMode.dnd = el.checked; S.focus.dnd = el.checked; } save('focus', 'settings'); renderFocus(); toast(el.checked ? 'Do Not Disturb on' : 'Do Not Disturb off', el.checked ? 'Your phone stays quiet during focus sessions.' : '', 'ok', { timeout: 1800 }); },
+    focusLock: (el) => { if (el.checked && !lockReady()) { el.checked = false; needLockAccess(); return; } if (S.focus.active) S.focus.lockApps = el.checked; else { S.settings.focusMode.lockApps = el.checked; S.focus.lockApps = el.checked; } save('focus', 'settings'); renderFocus(); toast(el.checked ? 'App lock on' : 'App lock off', el.checked ? 'Apps you haven’t allowed are locked during focus sessions.' : '', 'ok', { timeout: 1800 }); },
+    perm: (el) => {
+      const id = el.dataset.id; const cur = permList().find((p) => p.id === id); el.checked = !!(cur && cur.on);
+      if (id === 'notifications' && notifPerm() === 'prompt') { askNotifPermission(); return; }
+      if (id === 'dnd' && !devStatus.dndAccess) pendingPerm.dnd = true;
+      Device.openSettings(id);
+    },
     allowToggle: (el) => { S.focus.allow[el.dataset.id] = el.checked; S.settings.focusMode.allow = clone(S.focus.allow); save('focus', 'settings'); },
     resumeAfterBreak: (el) => { S.focus.resumeAfterBreak = el.checked; save('focus'); },
   };
@@ -1864,7 +2176,11 @@ window.CadenceStore.ready.then(() => {
   $('#notifClear').onclick = async () => { if (!S.notifs.length) return; if (await confirmDialog({ title: 'Clear notifications?', message: 'Your notification history will be removed.', confirmText: 'Clear', danger: true })) { S.notifs = []; save('notifs'); renderNotifs(); updateBell(); } };
   $('#qaNewTask').onclick = () => openTaskForm();
   $('#qaFocus').onclick = () => openFocusSetup(); $('#qaCalendar').onclick = () => go('calendar');
-  $('#customizeBtn').onclick = () => { ui.editingWidgets = !ui.editingWidgets; renderHome(); };
+  $('#customizeBtn').onclick = () => {
+    const visible = S.widgets.order.filter((w) => !S.widgets.hidden.includes(w));
+    if (!visible.length && !ui.editingWidgets) { openWidgetGallery(); return; }
+    ui.editingWidgets = !ui.editingWidgets; renderHome();
+  };
   $('#taskViews').addEventListener('click', (e) => { const b = e.target.closest('[data-view]'); if (!b) return; S.ui.taskView = b.dataset.view; save('ui'); renderTasks(); });
   $('#taskSearch').addEventListener('input', (e) => { ui.search = e.target.value; renderTasks(); });
   $('#fPriority').onchange = (e) => { ui.filters.priority = e.target.value; renderTasks(); };
@@ -1905,17 +2221,30 @@ window.CadenceStore.ready.then(() => {
       timer: { phase: t.phase, status: t.status, endAt: t.endAt, remaining: t.remaining, total: t.total, cycle: t.cycle || 0 },
       timerConfig: { focusMs: phaseTotal('focus'), shortMs: p.short * MIN, longMs: p.long * MIN, interval: p.interval, autoTransition: p.autoTransition, taskTitle: tk ? tk.title : '' },
       notif: { pomodoro: !!cats.pomodoro, breakDone: !!cats.breakDone, screenBreak: !!cats.screenBreak },
-      music: { playing: CadenceAudio.playing, title: cur ? cur.title : '' },
-      dnd: { enabled: !!(S.focus.active && S.focus.dnd), allow: S.focus.allow },
+      music: { has: !!cur, playing: CadenceAudio.playing, title: cur ? cur.title : '', category: cur ? cur.categoryName : '' },
+      dnd: { enabled: dndOn(focusPref('dnd')), allow: S.focus.active ? S.focus.allow : S.settings.focusMode.allow },
+      lock: { enabled: lockOn(focusPref('lockApps')), allowed: S.settings.focusMode.allowedApps },
+      alerts: { sound: !!(S.settings.general.sounds && S.settings.notifications.sound), vibrate: !!S.settings.general.vibrate },
+      weekStart: S.settings.general.weekStart,
+      goals: { dailyMin: S.settings.goals.dailyFocusMin, weeklyHours: S.settings.goals.weeklyFocusHours, weeklyTasks: S.settings.goals.weeklyTasks },
+      quotes: QUOTES,
       eye: { enabled: !!sb.enabled, intervalMs: sb.interval * MIN, durationSec: sb.duration, postponeMin: sb.postponeMin, snoozeUntil: S.eye.snoozeUntil || 0, accumMs: Math.round(S.eye.accum || 0), applyTo: sb.applyTo },
       reminders: scheduledReminders(now),
       today: {
         tasks: tasks.map((x) => ({ id: x.id, title: x.title, status: x.status, start: ms(x.start), end: ms(x.end), due: ms(x.due), completedAt: x.completedAt || 0, color: catColor(x.category) })),
         focusDays: Array.from(focusDays()).filter((k) => k >= since),
         focusToday: { day: dayKey(now), ms: Math.round(focusMsBetween(sod, sod + DAY)) },
+        focusByDay: perDay(now, (a, b) => Math.round(focusMsBetween(a, b))),
+        doneByDay: perDay(now, (a, b) => tasksDoneBetween(a, b)),
         goalMin: S.settings.goals.dailyFocusMin,
       },
     };
+  }
+  // { 'YYYY-MM-DD': value } for the last 6 weeks, for the home-screen widgets.
+  function perDay(now, fn) {
+    const out = {}; let d = startOfDay(new Date(now));
+    for (let i = 0; i < 42; i++) { const a = d.getTime(); const v = fn(a, addDays(d, 1).getTime()); if (v) out[dayKey(a)] = v; d = addDays(d, -1); }
+    return out;
   }
   let syncTimer = null; let draining = false;
   function scheduleSync(now) {
@@ -1953,13 +2282,21 @@ window.CadenceStore.ready.then(() => {
           S.notifs.unshift({ id: uid(), ts: at, cat: a.cat, title: a.title, body: a.body, read: false }); S.notifs = S.notifs.slice(0, 150); save('notifs');
         }
         break;
-      case 'music': if (Date.now() - at < 30000 && CadenceAudio.current) musicToggle(); break;
+      case 'music':
+        if (Date.now() - at > 30000) break; // only act on fresh taps
+        if (a.cmd === 'musicNext') musicStep(1);
+        else if (a.cmd === 'musicPrev') musicStep(-1);
+        else if (a.cmd === 'musicStop') { CadenceAudio.stop(); renderMusic(); }
+        else musicToggle();
+        break;
       case 'open': openFromOutside(a.screen); break;
     }
   }
   function openFromOutside(screen) {
     if (screen === 'newTask') { go('tasks'); openTaskForm(); }
     else if (screen === 'screenBreak') { if (S.settings.screenBreak.enabled && !S.eye.active) triggerEye(); }
+    else if (screen === 'playMusic') { go('focus'); musicResume(); }
+    else if (screen === 'insights') go('insights', { push: true });
     else if (['home', 'tasks', 'calendar', 'focus', 'settings'].includes(screen)) go(screen);
   }
   async function drainActions() {
@@ -1973,7 +2310,7 @@ window.CadenceStore.ready.then(() => {
     scheduleSync(true);
   }
   Device.onActions(() => drainActions());
-  Device.onResume(() => { drainActions(); refreshDeviceStatus().then(() => { if (['settings', 'focus', 'home'].includes(ui.screen)) renderAll(); }); });
+  Device.onResume(() => { drainActions(); refreshDeviceStatus().then(() => { applyPermissionDefaults(); if (['settings', 'focus', 'home'].includes(ui.screen)) renderAll(); }); });
   Device.onPause(() => { flush(); scheduleSync(true); });
 
   /* ============ Main loop (timestamp based) ============ */
@@ -2003,9 +2340,11 @@ window.CadenceStore.ready.then(() => {
     S.music.volume = isNum(S.music.volume) ? S.music.volume : S.settings.music.volume;
     S.eye.lastTick = Date.now(); // time while Cadence was closed is handled by the device
     const startScreen = ui.screen; ui.screen = null; go(startScreen);
+    enhanceControls(document.body);
     // Apply what was done from widgets and notifications before catching the timer up to now.
     await drainActions();
     await refreshDeviceStatus();
+    applyPermissionDefaults();
     if (S.eye.active) { if (Date.now() >= S.eye.active.endAt) completeEye(false); else showEyeOverlay(); }
     let guard = 0; while (S.timer.status === 'running' && Date.now() >= S.timer.endAt && guard++ < 12) completePhase(S.timer.endAt);
     if (S.timer.status === 'idle' && S.timer.awaiting === 'break') promptBreak();
