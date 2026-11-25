@@ -75,8 +75,15 @@
   // Bridge calls never throw into the app: failures are logged and resolve to a fallback.
   const quiet = (p, fallback) => { try { return Promise.resolve(typeof p === 'function' ? p() : p).catch((e) => { console.warn('[Cadence]', e); return fallback; }); } catch (e) { console.warn('[Cadence]', e); return Promise.resolve(fallback); } };
 
+  const platform = isNative && typeof Cap.getPlatform === 'function' ? Cap.getPlatform() : 'web';
   const device = {
     isNative,
+    platform,
+    isIOS: platform === 'ios',
+    /** iOS: Apple's Screen Time picker for the apps allowed during focus; resolves to { saved, count }. */
+    pickApps: () => (Native ? quiet(() => Native.pickApps(), { saved: false, count: 0 }) : Promise.resolve({ saved: false, count: 0 })),
+    requestScreenTime: () => (Native ? quiet(() => Native.requestScreenTime(), { granted: false }) : Promise.resolve({ granted: false })),
+    requestAlarms: () => (Native ? quiet(() => Native.requestAlarms(), { granted: false }) : Promise.resolve({ granted: false })),
     /** Publishes app state for widgets, alarms, notifications and Do Not Disturb. */
     sync: (state) => (Native ? quiet(Native.sync({ state })) : Promise.resolve()),
     /** Actions taken from widgets and notifications while the app was in the background. */

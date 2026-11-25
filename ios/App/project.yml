@@ -1,0 +1,74 @@
+# Xcode project for Cadence on iOS. Generate App.xcodeproj on a Mac with:
+#   brew install xcodegen && cd ios/App && xcodegen
+# Then open App.xcodeproj, pick your Team under Signing & Capabilities for all three targets, and run.
+name: App
+options:
+  bundleIdPrefix: app.cadence
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+packages:
+  CapApp-SPM:
+    path: CapApp-SPM
+targets:
+  App:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+        excludes:
+          - "public"
+          - "public/**"
+      - path: App/public
+        type: folder
+        buildPhase: resources
+      - path: Shared
+    dependencies:
+      - package: CapApp-SPM
+        product: CapApp-SPM
+      - target: CadenceWidgets
+      - target: CadenceMonitor
+    configFiles:
+      Debug: ../debug.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.cadence.focus
+        INFOPLIST_FILE: App/Info.plist
+        CODE_SIGN_ENTITLEMENTS: App/App.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        OTHER_SWIFT_FLAGS: "$(inherited) -D COCOAPODS"
+  CadenceWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: CadenceWidgets
+      - path: Shared
+        excludes:
+          - "AppLock.swift"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.cadence.focus.widgets
+        INFOPLIST_FILE: CadenceWidgets/Info.plist
+        CODE_SIGN_ENTITLEMENTS: CadenceWidgets/CadenceWidgets.entitlements
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: ""
+        SKIP_INSTALL: YES
+  CadenceMonitor:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: CadenceMonitor
+      - path: Shared/SharedStore.swift
+      - path: Shared/TimerEngine.swift
+      - path: Shared/AppLock.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.cadence.focus.monitor
+        INFOPLIST_FILE: CadenceMonitor/Info.plist
+        CODE_SIGN_ENTITLEMENTS: CadenceMonitor/CadenceMonitor.entitlements
+        SKIP_INSTALL: YES

@@ -1,6 +1,6 @@
 /* ===========================================================
    Cadence — application logic
-   All data lives on the device (see native.js). The Android side
+   All data lives on the device (see native.js). The Android/iOS side
    mirrors the timer, reminders and screen breaks so widgets and
    notifications keep working while the app is closed.
    Sections:
@@ -89,7 +89,7 @@ window.CadenceStore.ready.then(() => {
     settings: {
       general: { theme: 'system', timeFormat: '12', weekStart: 0, sounds: true, timerSound: true, chimeVolume: 0.5, vibrate: true },
       pomodoro: { focus: 25, short: 5, long: 15, interval: 4, autoTransition: true },
-      focusMode: { defaultDuration: 25, dnd: false, dndAuto: false, allow: { calls: true, repeatCallers: true, messages: false, events: true }, lockApps: false, allowedApps: [], autoMusic: true, trackWork: true },
+      focusMode: { defaultDuration: 25, dnd: false, dndAuto: false, allow: { calls: true, repeatCallers: true, messages: false, events: true }, lockApps: false, allowedApps: [], allowedIosCount: 0, autoMusic: true, trackWork: true },
       screenBreak: { enabled: true, interval: 20, duration: 20, applyTo: 'both', pauseTimer: true, postponeMin: 5 },
       notifications: { categories: { upcoming: true, start: true, endApproach: true, overdue: true, deadline: true, pomodoro: true, breakDone: true, screenBreak: true, daily: true, achievements: true }, defaultReminder: 10, endLead: 10, deadlineLead: 60, dailyTime: '09:00', sound: true },
       music: { category: 'lofi', volume: 0.6, pauseOnBreak: true },
@@ -862,20 +862,36 @@ window.CadenceStore.ready.then(() => {
   // Focus-tab switches apply to every focus session: Focus Mode runs use their own copy.
   const focusPref = (k) => (S.focus.active ? S.focus[k] : S.settings.focusMode[k]);
   const restrictionsActive = () => S.timer.phase === 'focus' && S.timer.status !== 'idle';
-  // Do Not Disturb and app lock only count as on when Android has granted the access they need.
-  const dndOn = (v) => !!v && (!Device.isNative || devStatus.dndAccess);
+  // Do Not Disturb and app lock only count as on when the phone has granted the access they need.
+  // iOS doesn't let apps switch Focus / Do Not Disturb, so there it's guidance instead of a switch.
+  const DND_SUPPORTED = !Device.isIOS;
+  const dndOn = (v) => DND_SUPPORTED && !!v && (!Device.isNative || devStatus.dndAccess);
   const lockReady = () => Device.isNative && devStatus.usageAccess && devStatus.overlay;
   const lockOn = (v) => !!v && lockReady();
   const dndActive = () => restrictionsActive() && dndOn(focusPref('dnd'));
   const pendingPerm = { dnd: false, lock: false };
   async function needDndAccess() {
     if (!Device.isNative) return;
+    if (Device.isIOS) { iosFocusHelp(); return; }
     const ok = await confirmDialog({ title: 'Allow Do Not Disturb access', confirmText: 'Open settings', cancelText: 'Not now',
       message: 'To silence calls and notifications while you focus, Cadence needs permission to manage Do Not Disturb. In the list that opens, switch Cadence on, then come back.' });
     if (ok) { pendingPerm.dnd = true; Device.openSettings('dnd'); }
   }
+  function iosFocusHelp() {
+    openModal({ title: 'Quiet your iPhone', size: 'sm', body: `<p>iPhone doesn't let apps turn on Do Not Disturb or a Focus for you.</p>
+      <p class="small muted" style="margin-top:8px">Swipe down from the top-right corner to open Control Center, tap <b>Focus</b>, then choose <b>Do Not Disturb</b> or a Focus you've set up. Cadence's timer and screen-break alerts are time-sensitive, so they still reach you.</p>`,
+      foot: '<button class="btn btn-primary" data-close>Got it</button>' });
+  }
   async function needLockAccess() {
     if (!Device.isNative) return;
+    if (Device.isIOS) {
+      const ok = await confirmDialog({ title: 'Allow Screen Time access', confirmText: 'Continue', cancelText: 'Not now',
+        message: 'Cadence uses Screen Time to lock other apps during focus. iPhone will ask you to confirm with Face ID or your passcode.' });
+      if (!ok) return;
+      const r = await Device.requestScreenTime(); await refreshDeviceStatus();
+      if (r && r.granted) { S.settings.focusMode.lockApps = true; S.focus.lockApps = true; save('settings', 'focus'); renderAll(); toast('App lock on', 'Choose which apps stay usable during focus.', 'ok', { actions: [{ label: 'Choose', fn: () => chooseApps() }] }); }
+      return;
+    }
     const next = !devStatus.usageAccess ? 'usage' : !devStatus.overlay ? 'overlay' : null;
     if (!next) return;
     const ok = await confirmDialog({ title: next === 'usage' ? 'Allow usage access' : 'Allow display over other apps', confirmText: 'Open settings', cancelText: 'Not now',
@@ -900,6 +916,12 @@ window.CadenceStore.ready.then(() => {
   let appListCache = null;
   async function chooseApps() {
     if (!Device.isNative) return;
+    if (Device.isIOS) {
+      if (!devStatus.usageAccess) { needLockAccess(); return; }
+      const r = await Device.pickApps();
+      if (r && r.saved) { S.settings.focusMode.allowedIosCount = r.count || 0; save('settings'); renderAll(); toast('Allowed apps saved', `${r.count || 0} app${r.count === 1 ? '' : 's'} stay usable during focus.`, 'ok'); }
+      return;
+    }
     const m = openModal({ title: 'Allowed during focus', id: 'apps', body: `<p class="small muted">Checked apps stay usable while you focus. Every other app shows a lock screen until your break. Phone calls, Settings and Cadence are always allowed.</p>
       <div class="search-box"><svg><use href="#i-search"/></svg><input type="search" id="appSearch" placeholder="Search apps" aria-label="Search apps"></div>
       <div class="app-pick-list" id="appPick"><div class="empty"><p class="small muted">Loading your apps…</p></div></div>`,
@@ -916,7 +938,7 @@ window.CadenceStore.ready.then(() => {
     $('#appPick', m.el).addEventListener('change', (e) => { if (e.target.checked) chosen.add(e.target.value); else chosen.delete(e.target.value); });
     m.el.querySelector('[data-save]').onclick = () => { S.settings.focusMode.allowedApps = Array.from(chosen); save('settings'); m.close(true); renderAll(); toast('Allowed apps saved', `${chosen.size} app${chosen.size === 1 ? '' : 's'} stay usable during focus.`, 'ok'); };
   }
-  const allowedCount = () => S.settings.focusMode.allowedApps.length;
+  const allowedCount = () => (Device.isIOS ? S.settings.focusMode.allowedIosCount || 0 : S.settings.focusMode.allowedApps.length);
 
   function startTimer(at = Date.now()) {
     const t = S.timer; t.total = phaseTotal(t.phase); t.endAt = at + t.total; t.status = 'running'; t.phaseStartedAt = at; t.awaiting = null;
@@ -1043,7 +1065,8 @@ window.CadenceStore.ready.then(() => {
         <div class="input-suffix"><input class="input" type="number" inputmode="numeric" min="1" max="240" name="duration" value="${cfg.duration}" aria-label="Focus minutes"><span>min</span></div>
         ${editing ? '<span class="field-hint">Changing the duration adjusts the session that is running now.</span>' : ''}</div>
       <label class="field"><span>3. Background music</span><select class="select" name="music">${musicOpts.map(([v, l]) => `<option value="${v}" ${cfg.music === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-      <div class="set-row" style="padding:4px 0;border:0"><div class="lbl"><b>4. Do Not Disturb</b><span>Silences your phone while you focus and turns off again for breaks.</span></div><div class="ctl">${sw('name="dnd"', dndOn(cfg.dnd))}</div></div>
+      ${DND_SUPPORTED ? `<div class="set-row" style="padding:4px 0;border:0"><div class="lbl"><b>4. Do Not Disturb</b><span>Silences your phone while you focus and turns off again for breaks.</span></div><div class="ctl">${sw('name="dnd"', dndOn(cfg.dnd))}</div></div>`
+        : `<div class="set-row" style="padding:4px 0;border:0"><div class="lbl"><b>4. Quiet your iPhone</b><span>Turn on a Focus from Control Center. <button type="button" class="widget-link" data-action="iosFocusHelp">How</button></span></div><div class="ctl"><input type="checkbox" name="dnd" hidden></div></div>`}
       <div class="set-row" style="padding:4px 0;border:0"><div class="lbl"><b>5. Lock other apps</b><span>${allowedCount()} allowed app${allowedCount() === 1 ? '' : 's'} · <button type="button" class="widget-link" data-action="chooseApps">Choose</button></span></div><div class="ctl">${sw('name="lock"', lockOn(cfg.lockApps))}</div></div>`;
     const m = openModal({ title: editing ? 'Focus settings' : isResume ? 'Next focus session' : 'Set up Focus Mode', body, id: 'focus-setup',
       foot: `<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-go>${editing ? 'Apply changes' : icon('i-play') + 'Start focusing'}</button>` });
@@ -1477,7 +1500,7 @@ window.CadenceStore.ready.then(() => {
       else if (b.dataset.wg === 'remove') { S.widgets.hidden.push(id); S.widgets.order = S.widgets.order.filter((w) => w !== id); save('widgets'); }
       else if (b.dataset.wg === 'pin') {
         const r = await Device.pinWidget(WIDGET_INFO[id][2]);
-        if (!r || !r.supported) toast('Add it from your home screen', 'Touch and hold an empty spot on your home screen, tap Widgets, then find Cadence.', '', { timeout: 6000 });
+        if (!r || !r.supported) toast('Add it from your Home Screen', Device.isIOS ? 'Touch and hold an empty spot on your Home Screen, tap Edit → Add Widget, then search for Cadence.' : 'Touch and hold an empty spot on your home screen, tap Widgets, then find Cadence.', '', { timeout: 7000 });
         return;
       }
       m.el.querySelector('.wg-list').innerHTML = draw(); renderHome();
@@ -1660,7 +1683,8 @@ window.CadenceStore.ready.then(() => {
       <p class="small muted" style="text-align:center">Session ${(t.cycle % S.settings.pomodoro.interval) + (t.phase === 'focus' ? 1 : 0) || S.settings.pomodoro.interval} of ${S.settings.pomodoro.interval} · long break after every ${S.settings.pomodoro.interval} · ${sessionsBetween(startOfDay(new Date()).getTime(), Date.now() + 1)} completed today</p>
       <div class="timer-controls js-t-ctrl"></div>
       <div class="focus-toggles">
-        <div class="set-row"><div class="lbl"><b>${icon('i-moon')}Do Not Disturb</b><span>${dnd ? 'On — your phone is silenced' : isBreak && fm && dndOn(S.focus.dnd) ? 'Off for the break' : 'Silences your phone during focus'}</span></div><div class="ctl">${sw('data-action-change="focusDnd"', dndOn(fm ? S.focus.dnd : S.settings.focusMode.dnd))}</div></div>
+        ${DND_SUPPORTED ? `<div class="set-row"><div class="lbl"><b>${icon('i-moon')}Do Not Disturb</b><span>${dnd ? 'On — your phone is silenced' : isBreak && fm && dndOn(S.focus.dnd) ? 'Off for the break' : 'Silences your phone during focus'}</span></div><div class="ctl">${sw('data-action-change="focusDnd"', dndOn(fm ? S.focus.dnd : S.settings.focusMode.dnd))}</div></div>`
+          : `<div class="set-row"><div class="lbl"><b>${icon('i-moon')}Quiet your iPhone</b><span>Turn on a Focus in Control Center while you work</span></div><div class="ctl"><button class="btn btn-ghost btn-sm" data-action="iosFocusHelp">How</button></div></div>`}
         <div class="set-row"><div class="lbl"><b>${icon('i-lock')}Lock other apps</b><span>${allowedCount()} allowed app${allowedCount() === 1 ? '' : 's'} · <button type="button" class="widget-link" data-action="chooseApps">Choose</button></span></div><div class="ctl">${sw('data-action-change="focusLock"', lockOn(fm ? S.focus.lockApps : S.settings.focusMode.lockApps))}</div></div>
       </div>
       ${isBreak && t.status !== 'idle' ? `<div class="break-suggest">${icon('i-moon')}<div><b>Break time — rest away from the screen</b>${esc(randomSuggestion())}${fm && S.focus.dnd ? '<br><span class="small">Do Not Disturb is off during the break.</span>' : ''}</div></div>` : ''}
@@ -1774,8 +1798,12 @@ window.CadenceStore.ready.then(() => {
     { group: 'Data', id: 'about', title: 'About Cadence', icon: 'i-focus', color: '#441C72', sum: () => 'Widgets, privacy, version' },
   ];
   const sectionById = (id) => SETTINGS_SECTIONS.find((x) => x.id === id);
-  // System permissions, each shown as a switch that opens the matching Android settings page.
-  const permList = () => [
+  // System permissions, each shown as a switch that asks for it or opens the matching settings page.
+  const permList = () => Device.isIOS ? [
+    { id: 'notifications', title: 'Notifications', desc: 'Reminders, timers and screen breaks when Cadence is closed', on: notifPerm() === 'granted' },
+    { id: 'usage', title: 'Screen Time', desc: 'Lock other apps during focus sessions', on: !!devStatus.usageAccess },
+    ...(devStatus.alarmsSupported ? [{ id: 'fullScreen', title: 'Alarms', desc: 'Full-screen alert with sound when a session or break ends', on: !!devStatus.fullScreen }] : []),
+  ] : [
     { id: 'notifications', title: 'Notifications', desc: 'Reminders, timers and screen breaks when Cadence is closed', on: notifPerm() === 'granted' },
     { id: 'fullScreen', title: 'Full-screen alerts', desc: 'Wake the screen when a focus session or break ends', on: !!devStatus.fullScreen },
     { id: 'overlay', title: 'Display over other apps', desc: 'Show alerts and the app lock over whatever is open', on: !!devStatus.overlay },
@@ -1849,18 +1877,18 @@ window.CadenceStore.ready.then(() => {
         </div>
         <div class="set-group"><h3>App lock</h3>
           ${row('Lock other apps during focus', 'Apps you haven’t allowed show a lock screen until your break', sw('data-action-change="lockDefault"', lockOn(s.focusMode.lockApps)))}
-          ${row('Allowed apps', `${allowedCount()} app${allowedCount() === 1 ? '' : 's'} stay usable · calls, Settings and Cadence always do`, '<button class="btn btn-soft btn-sm" data-action="chooseApps">Choose</button>')}
+          ${row('Allowed apps', `${allowedCount()} app${allowedCount() === 1 ? '' : 's'} stay usable · ${Device.isIOS ? 'Phone, Settings and Cadence are never locked' : 'calls, Settings and Cadence always do'}`, '<button class="btn btn-soft btn-sm" data-action="chooseApps">Choose</button>')}
         </div>
-        <div class="set-group"><h3>Do Not Disturb</h3>
+        ${!DND_SUPPORTED ? `<div class="set-group"><h3>Do Not Disturb</h3>${row('Quiet your iPhone', 'iPhone doesn’t let apps switch Focus. Turn one on in Control Center; Cadence’s alerts are time-sensitive so they still come through.', '<button class="btn btn-ghost btn-sm" data-action="iosFocusHelp">How</button>')}</div>` : `<div class="set-group"><h3>Do Not Disturb</h3>
           ${row('Do Not Disturb during focus', 'Silences your phone while a focus session runs and turns off for breaks', sw('data-action-change="dndDefault"', dndOn(s.focusMode.dnd)))}
           <div class="set-row col"><span class="small muted">Still allowed through Do Not Disturb</span><div class="app-toggle-list">${DND_ALLOW.map((a) => `<label class="app-toggle"><input type="checkbox" data-setting="focusMode.allow.${a.id}" ${s.focusMode.allow[a.id] ? 'checked' : ''}>${icon(a.icon)}${a.name}</label>`).join('')}</div>
           <span class="small muted">Alarms and media always play.</span></div>
-        </div>`;
+        </div>`}`;
       case 'permissions': return `
-        <div class="set-group"><h3>Android permissions</h3>
+        <div class="set-group"><h3>Phone permissions</h3>
           ${permList().map((p) => row(p.title, p.desc, sw(`data-action-change="perm" data-id="${p.id}"`, p.on))).join('')}
         </div>
-        <p class="small muted" style="padding:0 6px">Each switch opens the matching page in your phone’s settings. Turn it back off there if you change your mind.</p>`;
+        <p class="small muted" style="padding:0 6px">${Device.isIOS ? 'Each switch asks iPhone for permission. To turn one off later, go to Settings → Cadence (Screen Time: Settings → Screen Time).' : 'Each switch opens the matching page in your phone’s settings. Turn it back off there if you change your mind.'}</p>`;
       case 'screen': return `
         <div class="set-group">
           ${row('Screen break reminders', `Separate from Pomodoro breaks. ${esc(st.text)}.`, tog('screenBreak.enabled'))}
@@ -1939,7 +1967,7 @@ window.CadenceStore.ready.then(() => {
           ${row('Works offline', 'Cadence needs no internet connection.', '')}
         </div>
         <div class="set-group"><h3>Home-screen widgets</h3>
-          <div class="set-row col"><span class="small">Touch and hold your home screen, tap <b>Widgets</b>, then add any Cadence widget: Focus timer, Today, Upcoming schedule, Deadlines, Daily progress, Weekly focus, Focus streak, Mini calendar, Focus music, Screen breaks or Daily quote. They update as soon as anything changes in the app.</span></div>
+          <div class="set-row col"><span class="small">${Device.isIOS ? 'Touch and hold your Home Screen, tap <b>Edit → Add Widget</b>, search for Cadence, then add any widget:' : 'Touch and hold your home screen, tap <b>Widgets</b>, then add any Cadence widget:'} Focus timer, Today, Upcoming schedule, Deadlines, Daily progress, Weekly focus, Focus streak, Mini calendar, Focus music, Screen breaks or Daily quote. They update as soon as anything changes in the app.${Device.isIOS ? ' While a session runs, the countdown also shows on your Lock Screen and in the Dynamic Island.' : ''}</span></div>
         </div>
         <div class="set-group"><h3>Privacy</h3>
           <div class="set-row col"><span class="small muted">No account, no server, no tracking. Tasks, sessions and settings are stored only on this device. Use Back up in Data & storage to keep a copy.</span></div>
@@ -2079,7 +2107,7 @@ window.CadenceStore.ready.then(() => {
     musicShuffle: () => { S.music.shuffle = !S.music.shuffle; save('music'); renderMusic(); }, musicRepeat: () => { S.music.repeat = !S.music.repeat; save('music'); renderMusic(); },
     musicStop: () => { CadenceAudio.stop(); renderMusic(); },
     uploadMusic: () => uploadMusic(), removeUpload: (el) => removeUpload(el.dataset.id),
-    dndAccess: () => needDndAccess(), chooseApps: () => chooseApps(), customizeWidgets: () => openWidgetGallery(), openWidgetGallery: () => openWidgetGallery(), exactAlarms: () => Device.openSettings('exactAlarms'), openNotifSettings: () => Device.openSettings('notifications'),
+    dndAccess: () => needDndAccess(), iosFocusHelp: () => iosFocusHelp(), chooseApps: () => chooseApps(), customizeWidgets: () => openWidgetGallery(), openWidgetGallery: () => openWidgetGallery(), exactAlarms: () => Device.openSettings('exactAlarms'), openNotifSettings: () => Device.openSettings('notifications'),
     eyeDone: () => completeEye(true), eyeSkip: () => skipEye(), eyePostpone: () => postponeEye(),
     eyeSettings: () => { postponeEye(); openSettingsSection('screen'); },
     eyeNow: () => { if (!S.settings.screenBreak.enabled || S.eye.active) return; triggerEye(); },
@@ -2144,9 +2172,11 @@ window.CadenceStore.ready.then(() => {
     lockDefault: (el) => { if (el.checked && !lockReady()) { el.checked = false; needLockAccess(); return; } S.settings.focusMode.lockApps = el.checked; if (!S.focus.active) S.focus.lockApps = el.checked; save('settings', 'focus'); toastSaved(); },
     focusDnd: (el) => { if (el.checked && Device.isNative && !devStatus.dndAccess) { el.checked = false; needDndAccess(); return; } if (S.focus.active) S.focus.dnd = el.checked; else { S.settings.focusMode.dnd = el.checked; S.focus.dnd = el.checked; } save('focus', 'settings'); renderFocus(); toast(el.checked ? 'Do Not Disturb on' : 'Do Not Disturb off', el.checked ? 'Your phone stays quiet during focus sessions.' : '', 'ok', { timeout: 1800 }); },
     focusLock: (el) => { if (el.checked && !lockReady()) { el.checked = false; needLockAccess(); return; } if (S.focus.active) S.focus.lockApps = el.checked; else { S.settings.focusMode.lockApps = el.checked; S.focus.lockApps = el.checked; } save('focus', 'settings'); renderFocus(); toast(el.checked ? 'App lock on' : 'App lock off', el.checked ? 'Apps you haven’t allowed are locked during focus sessions.' : '', 'ok', { timeout: 1800 }); },
-    perm: (el) => {
+    perm: async (el) => {
       const id = el.dataset.id; const cur = permList().find((p) => p.id === id); el.checked = !!(cur && cur.on);
       if (id === 'notifications' && notifPerm() === 'prompt') { askNotifPermission(); return; }
+      if (Device.isIOS && id === 'usage' && !devStatus.usageAccess) { needLockAccess(); return; }
+      if (Device.isIOS && id === 'fullScreen' && !devStatus.fullScreen) { await Device.requestAlarms(); await refreshDeviceStatus(); renderSettingsKeepScroll(); return; }
       if (id === 'dnd' && !devStatus.dndAccess) pendingPerm.dnd = true;
       Device.openSettings(id);
     },
@@ -2208,7 +2238,7 @@ window.CadenceStore.ready.then(() => {
   $('#widgetGrid').addEventListener('dragend', () => { dragId = null; $$('.dragging,.drop-target').forEach((x) => x.classList.remove('dragging', 'drop-target')); });
 
   /* ============ Device sync: widgets, alarms, notifications, DND ============ */
-  // Everything the Android side needs to keep working while Cadence is closed.
+  // Everything the native side (Android or iOS) needs to keep working while Cadence is closed.
   function deviceSnapshot() {
     const now = Date.now(); const sod = startOfDay(new Date()).getTime(); const t = S.timer; const tk = timerTask();
     const p = S.settings.pomodoro; const cats = S.settings.notifications.categories; const sb = S.settings.screenBreak;

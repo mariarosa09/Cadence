@@ -4,7 +4,7 @@
 
 <h1 align="center">Cadence</h1>
 
-<p align="center">Tasks, calendar, Pomodoro focus, focus music and screen-break reminders in one calm Android app.<br>
+<p align="center">Tasks, calendar, Pomodoro focus, focus music and screen-break reminders in one calm app for Android and iPhone.<br>
 Everything stays on your phone: no account, no server, no internet needed.</p>
 
 ## Features
@@ -29,11 +29,28 @@ Everything stays on your phone: no account, no server, no internet needed.</p>
 
 Anything you do from a widget or notification is replayed into the app's data the next time it runs.
 
+## Android and iPhone
+
+Both apps share the same interface code in `www/`. Each platform has its own native layer. iOS doesn't allow some Android behaviours, so the iPhone app uses the closest thing Apple allows:
+
+| Feature | Android | iPhone |
+| --- | --- | --- |
+| Home-screen widgets (all 11) | App widgets, tappable buttons | WidgetKit widgets, tappable buttons (iOS 17+) |
+| Running timer | Ongoing notification with Pause/Skip | Live Activity on the Lock Screen and Dynamic Island, with Pause/Skip |
+| End of a session or break | Full-screen alert that wakes the screen | Full-screen alarm on iOS 26 (AlarmKit); time-sensitive notification on older iOS |
+| Reminders and screen breaks while closed | Exact alarms | Scheduled local notifications (iOS keeps 64 at a time; the nearest ones are kept) |
+| App lock | Lock screen over apps you didn't allow | Screen Time shield on apps you didn't allow, chosen in Apple's app picker |
+| Do Not Disturb | Switched on and off automatically | **Not possible:** iOS doesn't let apps switch Focus. Cadence shows how to turn on a Focus from Control Center, and its alerts are time-sensitive so they get through. |
+| Music controls outside the app | Notification-shade player | Lock Screen and Control Center Now Playing controls |
+| "Add to phone" from the widget gallery | Pins the widget | Shows how to add it (iOS has no API for this) |
+
 ## Permissions
 
 Cadence asks for each permission when you first use the feature that needs it. **Settings → Permissions** in the app lists them all with a switch each.
 
-| Permission | Used for |
+On iPhone the list is shorter: Notifications, Screen Time (app lock) and, on iOS 26, Alarms.
+
+| Android permission | Used for |
 | --- | --- |
 | Notifications | Reminders, timers and screen breaks while the app is closed |
 | Full-screen alerts | Waking the screen when a session or break ends |
@@ -54,6 +71,7 @@ Data is stored on the device (Android SharedPreferences, via Capacitor Preferenc
 | --- | --- |
 | `www/` | The app interface: `index.html`, `style.css`, `script.js` (app logic), `audio.js` (music engine), `native.js` (device storage and the bridge to Android) |
 | `android/` | The native Android project (Capacitor 8). Native code is in `android/app/src/main/java/app/cadence/focus/` |
+| `ios/App/` | The native iOS project: `App/Native/` (app), `Shared/` (code shared with the extensions), `CadenceWidgets/` (widgets and Live Activity), `CadenceMonitor/` (Screen Time extension), `project.yml` (Xcode project definition) |
 | `resources/icons/` | Logo artwork: `logo-source.png` (original), `logo-mark.png` (hourglass on transparent), `app-icon-512.png` |
 
 The main native classes:
@@ -67,7 +85,7 @@ The main native classes:
 | `FocusService` | Foreground service for background music and the app lock |
 | `Widgets`, `MoreWidgets` | Draw the home-screen widgets |
 
-## Build and run
+## Build and run (Android)
 
 Requirements: Node 18+ and Android Studio, or a JDK 21 plus the Android SDK. Set `JAVA_HOME` to the JDK, for example Android Studio's `jbr` folder.
 
@@ -85,6 +103,25 @@ After changing anything in `www/`, run `npx cap sync android` again.
 
 For a Play Store release, create a signing key, add a `signingConfigs` block to `android/app/build.gradle`, and run `./gradlew bundleRelease`.
 
-## Supported Android versions
+## Build and run (iPhone)
 
-Android 7.0 (API 24) and newer. Built for Android 16 (API 36).
+Requirements: a Mac with Xcode 16 or newer (Xcode 26 for the iOS 26 alarm), an Apple developer account, and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
+
+```sh
+npm install
+npx cap sync ios
+brew install xcodegen
+cd ios/App && xcodegen        # creates App.xcodeproj with the app, widget and Screen Time targets
+open App.xcodeproj
+```
+
+In Xcode, set your **Team** under *Signing & Capabilities* for all three targets (App, CadenceWidgets, CadenceMonitor), then run on an iPhone. The Screen Time API doesn't work in the simulator. Run `xcodegen` again whenever you add or remove native files.
+
+The capabilities come from the entitlement files: App Groups (`group.app.cadence.focus`) on all three targets, and Family Controls on the app and the Screen Time extension. For App Store distribution, Apple must approve the Family Controls entitlement. Request it at developer.apple.com before submitting.
+
+> The iOS native code was written without access to a Mac and hasn't been compiled yet. Expect to fix a few build errors on the first Xcode build. The AlarmKit part (`AlarmController.swift`) only compiles with the iOS 26 SDK.
+
+## Supported versions
+
+- Android 7.0 (API 24) and newer, built for Android 16 (API 36).
+- iOS 17 and newer. The full-screen session alarm needs iOS 26.
