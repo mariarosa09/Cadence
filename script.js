@@ -1,0 +1,1842 @@
+/* ===========================================================
+   Cadence — application logic (vanilla JS, frontend only)
+   Sections:
+     1. Utilities          6. Notifications & reminders
+     2. Storage & state    7. Pomodoro timer & Focus Mode
+     3. UI primitives      8. Screen Break Reminder
+     4. Tasks model        9. Music player UI
+     5. Stats & rewards   10. Views, router, init
+   =========================================================== */
+(() => {
+  'use strict';
+
+  /* ============ 1. Utilities ============ */
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+  const clone = (o) => JSON.parse(JSON.stringify(o));
+  const MIN = 60000, HOUR = 3600000, DAY = 86400000;
+  const pad = (n) => String(n).padStart(2, '0');
+  const dayKey = (d) => { d = new Date(d); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+  const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+  const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+  const toLocalInput = (d) => { d = new Date(d); return `${dayKey(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+  const tms = (s) => (s ? new Date(s).getTime() : NaN);
+  const icon = (id, cls = '') => `<svg class="${cls}" aria-hidden="true"><use href="#${id}"/></svg>`;
+  const isNum = (v) => typeof v === 'number' && isFinite(v);
+
+  function fmtTime(d) {
+    d = new Date(d);
+    if (S.settings.general.timeFormat === '24') return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const h = d.getHours() % 12 || 12;
+    return `${h}:${pad(d.getMinutes())} ${d.getHours() < 12 ? 'AM' : 'PM'}`;
+  }
+  const fmtDay = (d, o) => new Date(d).toLocaleDateString(undefined, o || { weekday: 'short', month: 'short', day: 'numeric' });
+  function relDay(d) {
+    const k = dayKey(d), now = new Date();
+    if (k === dayKey(now)) return 'Today';
+    if (k === dayKey(addDays(now, 1))) return 'Tomorrow';
+    if (k === dayKey(addDays(now, -1))) return 'Yesterday';
+    return fmtDay(d);
+  }
+  const fmtWhen = (d) => `${relDay(d)}, ${fmtTime(d)}`;
+  function fmtDur(ms) {
+    const m = Math.round(ms / MIN);
+    if (m < 60) return `${m}m`;
+    const h = Math.floor(m / 60), r = m % 60;
+    return r ? `${h}h ${r}m` : `${h}h`;
+  }
+  function fmtClock(ms) {
+    const s = Math.max(0, Math.ceil(ms / 1000)); const m = Math.floor(s / 60);
+    return m >= 60 ? `${Math.floor(m / 60)}:${pad(m % 60)}:${pad(s % 60)}` : `${pad(m)}:${pad(s % 60)}`;
+  }
+  const fmtSec = (s) => `${Math.floor(s / 60)}:${pad(Math.floor(s % 60))}`;
+  function fmtRange(a, b) {
+    const A = new Date(a), B = new Date(b);
+    return dayKey(A) === dayKey(B) ? `${relDay(A)}, ${fmtTime(A)} – ${fmtTime(B)}` : `${fmtWhen(A)} → ${fmtWhen(B)}`;
+  }
+  function weekStartOf(d) {
+    const x = startOfDay(d); const ws = S.settings.general.weekStart;
+    const diff = (x.getDay() - ws + 7) % 7; return addDays(x, -diff);
+  }
+
+  /* ============ 2. Storage & state ============ */
+  const NS = 'cadence.v1.';
+  const corrupted = [];
+  const APPS = [
+    { id: 'phone', name: 'Phone', icon: 'i-phone', color: '#3A7A57' },
+    { id: 'messages', name: 'Messages', icon: 'i-msg', color: '#3E847C' },
+    { id: 'email', name: 'Email', icon: 'i-mail', color: '#4A6FA5' },
+    { id: 'calendar', name: 'Calendar', icon: 'i-cal', color: '#B8692F' },
+    { id: 'browser', name: 'Browser', icon: 'i-globe', color: '#5B5BA8' },
+    { id: 'social', name: 'Social Media', icon: 'i-users', color: '#B04A6A' },
+    { id: 'games', name: 'Games', icon: 'i-game', color: '#8A5A9E' },
+    { id: 'other', name: 'Other Apps', icon: 'i-apps', color: '#6B7579' },
+  ];
+  const DEFAULT_SUGGESTIONS = [
+    'Stand up and stretch your arms, back and legs.',
+    'Drink a glass of water.',
+    'Take a short walk — even around the room helps.',
+    'Rest your eyes: look out a window at something far away.',
+    'Try box breathing: in 4, hold 4, out 4, hold 4.',
+    'Relax without your phone for a few minutes.',
+  ];
+  const DEFAULTS = {
+    settings: {
+      general: { theme: 'system', timeFormat: '12', weekStart: 1, sounds: true, timerSound: true, chimeVolume: 0.5, vibrate: true },
+      pomodoro: { focus: 25, short: 5, long: 15, interval: 4, autoTransition: true },
+      focusMode: { defaultDuration: 25, dnd: true, apps: { phone: true, messages: true, email: false, calendar: true, browser: false, social: false, games: false, other: false }, autoMusic: true, trackWork: true },
+      screenBreak: { enabled: true, interval: 20, duration: 20, applyTo: 'both', pauseTimer: true, postponeMin: 5 },
+      notifications: { categories: { upcoming: true, start: true, endApproach: true, overdue: true, deadline: true, pomodoro: true, breakDone: true, screenBreak: true, daily: true, achievements: true }, defaultReminder: 10, endLead: 10, deadlineLead: 60, dailyTime: '09:00', sound: true },
+      music: { category: 'lofi', volume: 0.6, pauseOnBreak: true },
+      goals: { dailyFocusMin: 100, weeklyFocusHours: 10, weeklyTasks: 10 },
+      breakSuggestions: DEFAULT_SUGGESTIONS.slice(),
+    },
+    tasks: [], sessions: [], eyeLog: [], notifs: [], ach: {},
+    widgets: { order: ['pomodoro', 'today', 'upnext', 'progress', 'deadlines', 'weekly', 'streak', 'music', 'minical', 'screenbreak', 'quote'], hidden: [] },
+    timer: { phase: 'focus', status: 'idle', endAt: 0, remaining: 0, total: 0, cycle: 0, taskId: null, awaiting: null, phaseStartedAt: 0 },
+    focus: { active: false, taskId: null, duration: 25, music: 'lofi', dnd: true, apps: null, resumeAfterBreak: true, startedAt: 0 },
+    eye: { accum: 0, lastTick: 0, snoozeUntil: 0, active: null },
+    music: { category: 'lofi', trackId: null, repeat: false, shuffle: false, favorites: [], volume: 0.6 },
+    sent: {},
+    ui: { screen: 'home', taskView: 'all', calView: 'month', sort: 'scheduled' },
+  };
+  const ALL_WIDGETS = {
+    pomodoro: 'Pomodoro Timer', today: "Today's Tasks", upnext: 'Upcoming Schedule', progress: 'Daily Progress', deadlines: 'Upcoming Deadlines',
+    weekly: 'Weekly Productivity', streak: 'Focus Streak', music: 'Focus Music Player', minical: 'Mini Calendar', screenbreak: 'Screen Break Status', quote: 'Daily Motivational Quote',
+  };
+
+  // Deep-merge loaded data onto defaults, keeping only well-typed known keys.
+  function mergeDefaults(def, val) {
+    if (Array.isArray(def)) return Array.isArray(val) ? val : clone(def);
+    if (def && typeof def === 'object') {
+      const out = {}; const v = val && typeof val === 'object' && !Array.isArray(val) ? val : {};
+      for (const k of Object.keys(def)) out[k] = def[k] === null ? (k in v ? v[k] : null) : mergeDefaults(def[k], v[k]);
+      for (const k of Object.keys(v)) if (!(k in def) && def.constructor === Object && Object.keys(def).length === 0) out[k] = v[k];
+      return out;
+    }
+    if (typeof def === typeof val) return val;
+    return def;
+  }
+  function load(key) {
+    const def = DEFAULTS[key];
+    try {
+      const raw = localStorage.getItem(NS + key);
+      if (raw == null) return clone(def);
+      const v = JSON.parse(raw);
+      if (Array.isArray(def) && !Array.isArray(v)) throw new Error('expected array');
+      return mergeDefaults(def, v);
+    } catch (e) {
+      console.warn('[Cadence] Recovered from missing/corrupted storage key:', key, e.message);
+      corrupted.push(key); return clone(def);
+    }
+  }
+  const S = {};
+  Object.keys(DEFAULTS).forEach((k) => { S[k] = load(k); });
+  // Free-form maps (ach, sent) are preserved as-is.
+  ['ach', 'sent'].forEach((k) => { try { const r = JSON.parse(localStorage.getItem(NS + k) || '{}'); S[k] = r && typeof r === 'object' && !Array.isArray(r) ? r : {}; } catch (e) { S[k] = {}; } });
+
+  function normalizeTask(t) {
+    if (!t || typeof t !== 'object' || !t.title) return null;
+    const pr = ['low', 'medium', 'high'].includes(t.priority) ? t.priority : 'medium';
+    const st = ['pending', 'inprogress', 'completed'].includes(t.status) ? t.status : 'pending';
+    const okDate = (s) => (typeof s === 'string' && !isNaN(tms(s)) ? s : '');
+    return {
+      id: String(t.id || uid()), title: String(t.title).slice(0, 200), description: String(t.description || ''),
+      start: okDate(t.start), end: okDate(t.end), due: okDate(t.due), priority: pr, category: String(t.category || 'Personal'),
+      estimate: isNum(+t.estimate) && +t.estimate > 0 ? +t.estimate : 0,
+      reminder: { start: t.reminder && (t.reminder.start === null || isNum(t.reminder.start)) ? t.reminder.start : 10, end: !!(t.reminder ? t.reminder.end : true) },
+      subtasks: Array.isArray(t.subtasks) ? t.subtasks.filter((s) => s && s.text).map((s) => ({ id: String(s.id || uid()), text: String(s.text), done: !!s.done })) : [],
+      status: st, createdAt: isNum(t.createdAt) ? t.createdAt : Date.now(), completedAt: isNum(t.completedAt) ? t.completedAt : null,
+      actualMs: isNum(t.actualMs) ? t.actualMs : 0, focusMs: isNum(t.focusMs) ? t.focusMs : 0,
+      workingSince: isNum(t.workingSince) ? t.workingSince : null, workSource: t.workSource || null,
+    };
+  }
+  S.tasks = S.tasks.map(normalizeTask).filter(Boolean);
+  S.sessions = S.sessions.filter((s) => s && isNum(s.end) && isNum(s.ms) && ['focus', 'short', 'long'].includes(s.type));
+  S.eyeLog = S.eyeLog.filter((e) => e && isNum(e.ts) && ['completed', 'skipped', 'postponed'].includes(e.action));
+  S.notifs = S.notifs.filter((n) => n && n.id && isNum(n.ts));
+  S.widgets.order = S.widgets.order.filter((w) => ALL_WIDGETS[w]);
+  Object.keys(ALL_WIDGETS).forEach((w) => { if (!S.widgets.order.includes(w)) S.widgets.order.push(w); });
+  if (!['focus', 'short', 'long'].includes(S.timer.phase)) S.timer = clone(DEFAULTS.timer);
+  if (!['idle', 'running', 'paused'].includes(S.timer.status)) S.timer.status = 'idle';
+  if (!S.focus.apps) S.focus.apps = clone(S.settings.focusMode.apps);
+
+  const dirty = new Set(); let saveTimer = null;
+  function save(...keys) {
+    keys.forEach((k) => dirty.add(k));
+    clearTimeout(saveTimer); saveTimer = setTimeout(flush, 120);
+  }
+  let storageWarned = false;
+  function flush() {
+    clearTimeout(saveTimer);
+    dirty.forEach((k) => {
+      try { localStorage.setItem(NS + k, JSON.stringify(S[k])); } catch (e) {
+        if (!storageWarned) { storageWarned = true; toast('Could not save', 'Browser storage is full or unavailable — changes may be lost on refresh.', 'err'); }
+      }
+    });
+    dirty.clear();
+  }
+  window.addEventListener('pagehide', flush);
+  window.addEventListener('beforeunload', flush);
+
+  const ui = { screen: S.ui.screen || 'home', filters: { priority: '', category: '', status: '' }, search: '', calCursor: new Date(), calSelected: dayKey(new Date()), statRange: 'week', editingWidgets: false, editApps: false, charts: {} };
+
+  /* ============ 3. UI primitives ============ */
+  function toast(title, msg = '', kind = '', opts = {}) {
+    const el = document.createElement('div');
+    el.className = `toast ${kind}`; el.setAttribute('role', kind === 'err' ? 'alert' : 'status');
+    el.innerHTML = `<div class="b"><b>${esc(title)}</b>${msg ? `<span>${esc(msg)}</span>` : ''}${opts.actions ? `<div class="acts">${opts.actions.map((a, i) => `<button data-i="${i}">${esc(a.label)}</button>`).join('')}</div>` : ''}</div><button class="x" aria-label="Dismiss">${icon('i-x')}</button>`;
+    const close = () => { el.classList.add('out'); setTimeout(() => el.remove(), 200); };
+    el.querySelector('.x').onclick = close;
+    if (opts.actions) $$('.acts button', el).forEach((b) => { b.onclick = () => { close(); opts.actions[+b.dataset.i].fn(); }; });
+    $('#toasts').appendChild(el);
+    while ($('#toasts').children.length > 2) $('#toasts').firstChild.remove();
+    setTimeout(close, opts.timeout || (opts.actions ? 9000 : 3800));
+  }
+
+  const modalStack = [];
+  function openModal({ title, body, foot = '', size = '', onClose, id, dismissible = true }) {
+    if (id) { const ex = modalStack.find((m) => m.id === id); if (ex) ex.close(true); }
+    const wrap = document.createElement('div');
+    wrap.className = 'modal-wrap';
+    wrap.innerHTML = `<div class="modal ${size}" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+      <div class="modal-head"><h2>${esc(title)}</h2>${dismissible ? `<button class="icon-btn" data-close aria-label="Close">${icon('i-x')}</button>` : ''}</div>
+      <div class="modal-body">${body}</div>${foot ? `<div class="modal-foot">${foot}</div>` : ''}</div>`;
+    const prevFocus = document.activeElement;
+    const m = { id, el: wrap, dismissible, close(silent) {
+      const i = modalStack.indexOf(m); if (i < 0) return; modalStack.splice(i, 1); wrap.remove();
+      if (!modalStack.length) document.body.classList.remove('no-scroll');
+      if (!silent && onClose) onClose(); if (prevFocus && prevFocus.focus) try { prevFocus.focus(); } catch (e) {}
+    } };
+    wrap.addEventListener('click', (e) => { if ((e.target === wrap && dismissible) || e.target.closest('[data-close]')) m.close(); });
+    $('#modalHost').appendChild(wrap); modalStack.push(m); document.body.classList.add('no-scroll');
+    setTimeout(() => { const f = wrap.querySelector('input:not([type=hidden]),select,textarea,button.btn-primary'); if (f) f.focus(); }, 30);
+    return m;
+  }
+  function confirmDialog({ title, message, confirmText = 'Confirm', danger = false, cancelText = 'Cancel' }) {
+    return new Promise((res) => {
+      let done = false;
+      const m = openModal({ title, size: 'sm', body: `<p>${message}</p>`,
+        foot: `<button class="btn btn-ghost" data-c="0">${esc(cancelText)}</button><button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" data-c="1">${esc(confirmText)}</button>`,
+        onClose: () => { if (!done) res(false); } });
+      $$('[data-c]', m.el).forEach((b) => b.onclick = () => { done = true; m.close(true); res(b.dataset.c === '1'); });
+    });
+  }
+  function choiceDialog({ title, message, choices, id, dismissible = true }) {
+    return new Promise((res) => {
+      let done = false;
+      const m = openModal({ title, size: 'sm', id, dismissible, body: `<div>${message}</div>`,
+        foot: choices.map((c, i) => `<button class="btn ${c.kind || 'btn-ghost'}" data-ch="${i}">${esc(c.label)}</button>`).join(''),
+        onClose: () => { if (!done) res(null); } });
+      $$('[data-ch]', m.el).forEach((b) => b.onclick = () => { done = true; m.close(true); res(choices[+b.dataset.ch].value); });
+    });
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (!$('#notifDrawer').hidden) { closeDrawer(); return; }
+    const top = modalStack[modalStack.length - 1]; if (top && top.dismissible) top.close();
+  });
+  function emptyState(ic, title, text, action = '') {
+    return `<div class="empty"><div class="empty-art">${icon(ic)}</div><h4>${esc(title)}</h4><p class="small">${esc(text)}</p>${action ? `<div style="margin-top:12px">${action}</div>` : ''}</div>`;
+  }
+  const sw = (attrs, checked) => `<label class="switch"><input type="checkbox" ${attrs} ${checked ? 'checked' : ''}><span class="track"></span></label>`;
+
+  /* ============ 4. Tasks model ============ */
+  const CAT_COLORS = { Work: '#7A5BE6', Study: '#4F7FD9', Personal: '#E0884A', Health: '#3FA07A', Errands: '#C46BD6', Other: '#8A8399' };
+  const EXTRA_COLORS = ['#2F8FA8', '#D6455D', '#8C9A3A', '#B57BE8', '#C77A3C', '#5A6FE0'];
+  function catColor(c) {
+    if (CAT_COLORS[c]) return CAT_COLORS[c];
+    let h = 0; for (const ch of String(c)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    return EXTRA_COLORS[h % EXTRA_COLORS.length];
+  }
+  const PRI_COLOR = { high: '#D6455D', medium: '#D18F1F', low: '#3FA07A' };
+  const PRI_RANK = { high: 0, medium: 1, low: 2 };
+  const categories = () => Array.from(new Set(Object.keys(CAT_COLORS).concat(S.tasks.map((t) => t.category)))).filter(Boolean);
+  const getTask = (id) => S.tasks.find((t) => t.id === id);
+  const isScheduled = (t) => !!(t.start && t.end);
+  const deadlineOf = (t) => (t.due ? tms(t.due) : t.end ? tms(t.end) : NaN);
+  const isOverdue = (t, now = Date.now()) => t.status !== 'completed' && isFinite(deadlineOf(t)) && deadlineOf(t) < now;
+  function workedMs(t, now = Date.now()) { return t.actualMs + (t.workingSince ? now - t.workingSince : 0); }
+  function touchesDay(t, day) {
+    const a = startOfDay(day).getTime(), b = a + DAY;
+    if (isScheduled(t) && tms(t.start) < b && tms(t.end) > a) return true;
+    if (t.due && tms(t.due) >= a && tms(t.due) < b) return true;
+    return false;
+  }
+  function overlapsFor(task, excludeId) {
+    if (!isScheduled(task)) return [];
+    const a = tms(task.start), b = tms(task.end);
+    return S.tasks.filter((o) => o.id !== excludeId && o.status !== 'completed' && isScheduled(o) && tms(o.start) < b && tms(o.end) > a);
+  }
+
+  function upsertTask(data) {
+    const existing = data.id && getTask(data.id);
+    if (existing) {
+      const scheduleChanged = existing.start !== data.start || existing.end !== data.end || existing.due !== data.due;
+      Object.assign(existing, data);
+      if (scheduleChanged) clearSentFor(existing.id);
+      if (existing.status === 'completed' && !existing.completedAt) existing.completedAt = Date.now();
+      if (existing.status !== 'completed') existing.completedAt = null;
+    } else {
+      const t = normalizeTask(Object.assign({ id: uid(), createdAt: Date.now() }, data));
+      if (t.status === 'completed') t.completedAt = Date.now();
+      S.tasks.push(t);
+    }
+    save('tasks'); checkAchievements(); renderAll();
+  }
+  function clearSentFor(id) { Object.keys(S.sent).forEach((k) => { if (k.includes(':' + id + ':')) delete S.sent[k]; }); save('sent'); }
+  function setStatus(t, status) {
+    const now = Date.now();
+    if (status === 'completed') {
+      stopWork(t, now, true); t.status = 'completed'; t.completedAt = now; buzz(30);
+      t.subtasks.forEach((s) => (s.done = true));
+      toast('Task completed', t.title, 'ok', { actions: [{ label: 'Undo', fn: () => { t.status = 'pending'; t.completedAt = null; save('tasks'); renderAll(); } }] });
+    } else { t.status = status; t.completedAt = null; }
+    save('tasks'); checkAchievements(); renderAll();
+  }
+  function startWork(t, source = 'manual', at = Date.now()) {
+    if (!t || t.status === 'completed') return;
+    if (!t.workingSince) { t.workingSince = at; t.workSource = source; }
+    if (t.status === 'pending') t.status = 'inprogress';
+    save('tasks');
+  }
+  function stopWork(t, at = Date.now(), force = false, source = null) {
+    if (!t || !t.workingSince) return;
+    if (!force && source && t.workSource !== source) return;
+    t.actualMs += Math.max(0, at - t.workingSince); t.workingSince = null; t.workSource = null; save('tasks');
+  }
+  async function deleteTask(id) {
+    const t = getTask(id); if (!t) return;
+    const ok = await confirmDialog({ title: 'Delete task?', message: `"${esc(t.title)}" will be permanently removed.`, confirmText: 'Delete', danger: true });
+    if (!ok) return;
+    S.tasks = S.tasks.filter((x) => x.id !== id);
+    if (S.timer.taskId === id) S.timer.taskId = null;
+    if (S.focus.taskId === id) S.focus.taskId = null;
+    save('tasks', 'timer', 'focus'); modalStack.slice().forEach((m) => m.id === 'task-form' && m.close(true));
+    toast('Task deleted', '', ''); renderAll();
+  }
+
+  function filteredTasks() {
+    const now = Date.now(); const today = new Date(); const eod = startOfDay(today).getTime() + DAY;
+    const v = S.ui.taskView; const f = ui.filters; const q = ui.search.trim().toLowerCase();
+    let list = S.tasks.filter((t) => {
+      if (v === 'today' && !(touchesDay(t, today) || t.status === 'inprogress')) return false;
+      if (v === 'upcoming' && !(t.status !== 'completed' && ((isScheduled(t) && tms(t.start) >= eod) || (t.due && tms(t.due) >= eod)) && !isOverdue(t, now))) return false;
+      if (v === 'overdue' && !isOverdue(t, now)) return false;
+      if (v === 'completed' && t.status !== 'completed') return false;
+      if (f.priority && t.priority !== f.priority) return false;
+      if (f.category && t.category !== f.category) return false;
+      if (f.status && t.status !== f.status) return false;
+      if (q && !(`${t.title} ${t.description} ${t.category} ${t.subtasks.map((s) => s.text).join(' ')}`.toLowerCase().includes(q))) return false;
+      return true;
+    });
+    const far = 8.64e15; const by = S.ui.sort;
+    const st = { inprogress: 0, pending: 1, completed: 2 };
+    list.sort((a, b) => {
+      if (by === 'priority') return PRI_RANK[a.priority] - PRI_RANK[b.priority] || (tms(a.due) || far) - (tms(b.due) || far);
+      if (by === 'due') return (tms(a.due) || far) - (tms(b.due) || far);
+      if (by === 'status') return st[a.status] - st[b.status];
+      if (by === 'category') return a.category.localeCompare(b.category);
+      if (by === 'created') return b.createdAt - a.createdAt;
+      return (tms(a.start) || far) - (tms(b.start) || far) || (tms(a.due) || far) - (tms(b.due) || far);
+    });
+    if (v !== 'completed' && by !== 'status') list.sort((a, b) => (a.status === 'completed') - (b.status === 'completed'));
+    return list;
+  }
+
+  /* --- task form --- */
+  function openTaskForm(id, preset = {}) {
+    const t = id ? getTask(id) : null;
+    const d = t ? clone(t) : Object.assign({ title: '', description: '', start: '', end: '', due: '', priority: 'medium', category: 'Work', estimate: 0, reminder: { start: S.settings.notifications.defaultReminder, end: true }, subtasks: [], status: 'pending' }, preset);
+    const remOpts = [[null, 'No reminder'], [0, 'At start time'], [5, '5 min before'], [10, '10 min before'], [15, '15 min before'], [30, '30 min before'], [60, '1 hour before'], [1440, '1 day before']];
+    const body = `
+      <form id="taskForm" class="stack" novalidate>
+        <label class="field"><span>Title *</span><input class="input" name="title" maxlength="200" required value="${esc(d.title)}" placeholder="What do you need to do?"></label>
+        <label class="field"><span>Description</span><textarea class="textarea" name="description" placeholder="Notes, links, context">${esc(d.description)}</textarea></label>
+        <div class="grid-2">
+          <label class="field"><span>Priority</span><select class="select" name="priority">${['low', 'medium', 'high'].map((p) => `<option value="${p}" ${d.priority === p ? 'selected' : ''}>${p[0].toUpperCase() + p.slice(1)}</option>`).join('')}</select></label>
+          <label class="field"><span>Category</span><input class="input" name="category" list="catList" value="${esc(d.category)}" maxlength="40"><datalist id="catList">${categories().map((c) => `<option value="${esc(c)}">`).join('')}</datalist></label>
+        </div>
+        <div class="form-section"><h4>Schedule</h4>
+          <div class="grid-2">
+            <label class="field"><span>Start</span><input class="input" type="datetime-local" name="start" value="${esc(d.start)}"></label>
+            <label class="field"><span>End</span><input class="input" type="datetime-local" name="end" value="${esc(d.end)}"></label>
+          </div>
+          <div class="field-error" id="schedErr" hidden></div>
+          <div class="row wrap" style="margin-top:8px">
+            <button type="button" class="btn btn-ghost btn-sm" data-quick="now">Start now (+1h)</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-quick="tomorrow">Tomorrow 9:00</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-quick="clear">Clear schedule</button>
+          </div>
+          <div class="grid-2" style="margin-top:12px">
+            <label class="field"><span>Due date</span><input class="input" type="datetime-local" name="due" value="${esc(d.due)}"></label>
+            <label class="field"><span>Estimated duration (min)</span><input class="input" type="number" min="0" max="1440" step="5" name="estimate" value="${d.estimate || ''}" placeholder="e.g. 50"></label>
+          </div>
+        </div>
+        <div class="form-section"><h4>Reminders</h4>
+          <div class="grid-2">
+            <label class="field"><span>Before start</span><select class="select" name="remStart">${remOpts.map(([v, l]) => `<option value="${v === null ? '' : v}" ${d.reminder.start === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+            <label class="field"><span>End-time alerts</span><select class="select" name="remEnd"><option value="1" ${d.reminder.end ? 'selected' : ''}>Notify near & at end</option><option value="0" ${!d.reminder.end ? 'selected' : ''}>Off</option></select></label>
+          </div>
+        </div>
+        <div class="form-section"><h4>Checklist</h4>
+          <div class="subtask-editor" id="subEditor">${d.subtasks.map(subRow).join('')}</div>
+          <div class="row" style="margin-top:6px"><input class="input" id="subNew" placeholder="Add a subtask and press Enter"><button type="button" class="btn btn-soft" id="subAdd">${icon('i-plus')}</button></div>
+        </div>
+        <div class="form-section"><h4>Status</h4>
+          <div class="pill-group" id="statusPills">${[['pending', 'Pending'], ['inprogress', 'In progress'], ['completed', 'Completed']].map(([v, l]) => `<button type="button" class="pill" data-status="${v}" aria-pressed="${d.status === v}">${l}</button>`).join('')}</div>
+          ${t && (t.actualMs || t.workingSince || t.focusMs) ? `<p class="small muted" style="margin-top:8px">Actual time worked: <b>${fmtDur(workedMs(t))}</b>${t.focusMs ? ` · in focus sessions: ${fmtDur(t.focusMs)}` : ''}${isScheduled(t) ? ` · scheduled: ${fmtDur(tms(t.end) - tms(t.start))}` : ''}</p>` : ''}
+        </div>
+      </form>`;
+    const foot = `${t ? `<button class="btn btn-danger-ghost" data-act="del">${icon('i-trash')}Delete</button><span class="spacer"></span>` : ''}<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-act="save">${t ? 'Save changes' : 'Create task'}</button>`;
+    const m = openModal({ title: t ? 'Edit task' : 'New task', body, foot, id: 'task-form' });
+    const form = $('#taskForm', m.el);
+    let status = d.status;
+    function subRow(s) { return `<div class="subtask-row" data-sid="${esc(s.id)}"><input type="checkbox" ${s.done ? 'checked' : ''} aria-label="Done"><input class="input" value="${esc(s.text)}" aria-label="Subtask"><button type="button" class="icon-btn sm" data-rm aria-label="Remove subtask">${icon('i-x')}</button></div>`; }
+    const addSub = () => { const v = $('#subNew', m.el).value.trim(); if (!v) return; $('#subEditor', m.el).insertAdjacentHTML('beforeend', subRow({ id: uid(), text: v, done: false })); $('#subNew', m.el).value = ''; $('#subNew', m.el).focus(); };
+    $('#subAdd', m.el).onclick = addSub;
+    $('#subNew', m.el).addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addSub(); } });
+    $('#subEditor', m.el).addEventListener('click', (e) => { if (e.target.closest('[data-rm]')) e.target.closest('.subtask-row').remove(); });
+    $('#statusPills', m.el).addEventListener('click', (e) => { const b = e.target.closest('[data-status]'); if (!b) return; status = b.dataset.status; $$('[data-status]', m.el).forEach((x) => x.setAttribute('aria-pressed', x === b)); });
+    const fStart = form.start, fEnd = form.end;
+    m.el.addEventListener('click', (e) => {
+      const q = e.target.closest('[data-quick]'); if (!q) return;
+      const now = new Date(); now.setSeconds(0, 0); now.setMinutes(Math.ceil(now.getMinutes() / 5) * 5);
+      if (q.dataset.quick === 'now') { fStart.value = toLocalInput(now); fEnd.value = toLocalInput(now.getTime() + HOUR); }
+      if (q.dataset.quick === 'tomorrow') { const a = addDays(startOfDay(now), 1); a.setHours(9); fStart.value = toLocalInput(a); fEnd.value = toLocalInput(a.getTime() + HOUR); }
+      if (q.dataset.quick === 'clear') { fStart.value = ''; fEnd.value = ''; }
+      validateSched();
+    });
+    fStart.addEventListener('change', () => {
+      if (fStart.value && (!fEnd.value || tms(fEnd.value) <= tms(fStart.value))) {
+        const mins = +form.estimate.value || 60; fEnd.value = toLocalInput(tms(fStart.value) + mins * MIN);
+      }
+      validateSched();
+    });
+    fEnd.addEventListener('change', () => { validateSched(); if (fStart.value && fEnd.value && !form.estimate.value && tms(fEnd.value) > tms(fStart.value)) form.estimate.value = Math.round((tms(fEnd.value) - tms(fStart.value)) / MIN); });
+    function validateSched() {
+      const err = $('#schedErr', m.el); let msg = '';
+      if ((fStart.value && !fEnd.value) || (!fStart.value && fEnd.value)) msg = 'Set both a start and an end time to schedule this task.';
+      else if (fStart.value && fEnd.value && tms(fEnd.value) <= tms(fStart.value)) msg = 'End must be later than start.';
+      err.textContent = msg; err.hidden = !msg; fEnd.classList.toggle('invalid', !!msg);
+      return !msg;
+    }
+    m.el.querySelector('[data-act="save"]').onclick = async () => {
+      const title = form.title.value.trim();
+      form.title.classList.toggle('invalid', !title);
+      if (!title) { form.title.focus(); toast('Title is required', '', 'err'); return; }
+      if (!validateSched()) { toast('Check the schedule', $('#schedErr', m.el).textContent, 'err'); return; }
+      const subtasks = $$('.subtask-row', m.el).map((r) => ({ id: r.dataset.sid, text: r.querySelector('.input').value.trim(), done: r.querySelector('input[type=checkbox]').checked })).filter((s) => s.text);
+      const data = {
+        id: t ? t.id : undefined, title, description: form.description.value.trim(), start: fStart.value, end: fEnd.value, due: form.due.value,
+        priority: form.priority.value, category: form.category.value.trim() || 'Other', estimate: Math.max(0, +form.estimate.value || 0),
+        reminder: { start: form.remStart.value === '' ? null : +form.remStart.value, end: form.remEnd.value === '1' }, subtasks, status,
+      };
+      const ov = data.status !== 'completed' ? overlapsFor(data, t && t.id) : [];
+      if (ov.length) {
+        const go = await confirmDialog({ title: 'Schedule overlap', confirmText: 'Save anyway', cancelText: 'Go back',
+          message: `<div class="warn-box">This time overlaps with:<ul>${ov.map((o) => `<li><b>${esc(o.title)}</b> — ${esc(fmtRange(o.start, o.end))}</li>`).join('')}</ul></div>` });
+        if (!go) return;
+      }
+      if (t && status !== 'completed' && t.status === 'completed') { t.completedAt = null; }
+      if (t && status === 'completed' && t.status !== 'completed') stopWork(t, Date.now(), true);
+      upsertTask(data); m.close(true);
+      toast(t ? 'Task updated' : 'Task created', title, 'ok');
+    };
+    const del = m.el.querySelector('[data-act="del"]'); if (del) del.onclick = () => deleteTask(t.id);
+  }
+
+  function openPostpone(id) {
+    const t = getTask(id); if (!t) return;
+    const opts = [[15 * MIN, '15 minutes'], [HOUR, '1 hour'], [3 * HOUR, '3 hours'], ['tomorrow', 'Tomorrow'], [7 * DAY, '1 week']];
+    const m = openModal({ title: 'Postpone task', size: 'sm', body: `<p class="small muted">${esc(t.title)}${isScheduled(t) ? ` · ${esc(fmtRange(t.start, t.end))}` : ''}${t.due ? ` · due ${esc(fmtWhen(t.due))}` : ''}</p>
+      <div class="pill-group">${opts.map(([v, l], i) => `<button class="pill" data-p="${i}">${l}</button>`).join('')}</div>
+      ${t.due && isScheduled(t) ? `<label class="row small"><input type="checkbox" id="ppDue" checked style="accent-color:var(--accent)"> Also move the due date</label>` : ''}
+      <button class="btn btn-ghost btn-sm" data-p="custom">Pick a new time…</button>`, foot: '' });
+    m.el.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-p]'); if (!b) return;
+      if (b.dataset.p === 'custom') { m.close(true); openTaskForm(id); return; }
+      let delta = opts[+b.dataset.p][0];
+      const base = isScheduled(t) ? tms(t.start) : t.due ? tms(t.due) : Date.now();
+      if (delta === 'tomorrow') delta = addDays(new Date(base), 1).getTime() - base;
+      const moveDue = !isScheduled(t) || !t.due || ($('#ppDue', m.el) && $('#ppDue', m.el).checked);
+      if (isScheduled(t)) { t.start = toLocalInput(tms(t.start) + delta); t.end = toLocalInput(tms(t.end) + delta); }
+      if (t.due && moveDue) t.due = toLocalInput(tms(t.due) + delta);
+      clearSentFor(t.id); save('tasks'); m.close(true); renderAll();
+      toast('Postponed', `${t.title} → ${isScheduled(t) ? fmtWhen(t.start) : fmtWhen(t.due)}`, 'ok');
+    });
+  }
+
+  /* ============ 5. Stats, streaks & rewards ============ */
+  const focusSessions = () => S.sessions.filter((s) => s.type === 'focus');
+  function focusMsBetween(a, b) { return focusSessions().reduce((sum, s) => (s.end >= a && s.end < b ? sum + s.ms : sum), 0); }
+  function sessionsBetween(a, b, completedOnly = true) { return focusSessions().filter((s) => s.end >= a && s.end < b && (!completedOnly || s.completed)).length; }
+  function tasksDoneBetween(a, b) { return S.tasks.filter((t) => t.status === 'completed' && t.completedAt >= a && t.completedAt < b).length; }
+  function focusDays() { const set = new Set(); focusSessions().forEach((s) => s.completed && set.add(dayKey(s.end))); return set; }
+  function streak() {
+    const days = focusDays(); let d = startOfDay(new Date());
+    if (!days.has(dayKey(d))) d = addDays(d, -1);
+    let n = 0; while (days.has(dayKey(d))) { n++; d = addDays(d, -1); }
+    return n;
+  }
+  function bestStreak() {
+    const keys = Array.from(focusDays()).sort(); let best = 0, cur = 0, prev = null;
+    keys.forEach((k) => { const dt = new Date(k + 'T00:00'); cur = prev && Math.round((dt - prev) / DAY) === 1 ? cur + 1 : 1; best = Math.max(best, cur); prev = dt; });
+    return best;
+  }
+  function rangeBounds(r) {
+    const now = new Date(); const sod = startOfDay(now).getTime();
+    if (r === 'day') return [sod, sod + DAY];
+    if (r === 'week') { const ws = weekStartOf(now).getTime(); return [ws, ws + 7 * DAY]; }
+    if (r === 'month') { const a = new Date(now.getFullYear(), now.getMonth(), 1).getTime(); return [a, new Date(now.getFullYear(), now.getMonth() + 1, 1).getTime()]; }
+    const first = Math.min(sod, ...S.sessions.map((s) => s.end), ...S.tasks.map((t) => t.createdAt)); return [startOfDay(first).getTime(), sod + DAY];
+  }
+
+  const ACH = [
+    { id: 'focus-1', name: 'First focus', desc: 'Complete a focus session', icon: 'i-focus', test: (m) => m.sessions >= 1 },
+    { id: 'focus-10', name: 'Getting into rhythm', desc: '10 focus sessions', icon: 'i-focus', test: (m) => m.sessions >= 10 },
+    { id: 'focus-25', name: 'Steady cadence', desc: '25 focus sessions', icon: 'i-focus', test: (m) => m.sessions >= 25 },
+    { id: 'focus-100', name: 'Deep worker', desc: '100 focus sessions', icon: 'i-focus', test: (m) => m.sessions >= 100 },
+    { id: 'hours-10', name: 'Ten hours', desc: '10 hours of focus time', icon: 'i-clock', test: (m) => m.focusMs >= 10 * HOUR },
+    { id: 'task-1', name: 'First tick', desc: 'Complete a task', icon: 'i-check', test: (m) => m.tasks >= 1 },
+    { id: 'task-10', name: 'Momentum', desc: 'Complete 10 tasks', icon: 'i-check', test: (m) => m.tasks >= 10 },
+    { id: 'task-50', name: 'Finisher', desc: 'Complete 50 tasks', icon: 'i-check', test: (m) => m.tasks >= 50 },
+    { id: 'streak-3', name: 'Three in a row', desc: '3-day focus streak', icon: 'i-flame', test: (m) => m.best >= 3 },
+    { id: 'streak-7', name: 'A full week', desc: '7-day focus streak', icon: 'i-flame', test: (m) => m.best >= 7 },
+    { id: 'goal-day', name: 'Goal reached', desc: 'Hit your daily focus goal', icon: 'i-trophy', test: (m) => m.dayGoal },
+    { id: 'goal-week', name: 'Weekly goal', desc: 'Hit your weekly focus goal', icon: 'i-trophy', test: (m) => m.weekGoal },
+    { id: 'eye-10', name: 'Kind to your eyes', desc: '10 screen breaks completed', icon: 'i-eye', test: (m) => m.eye >= 10 },
+  ];
+  function metrics() {
+    const fs = focusSessions(); const [ws, we] = rangeBounds('week'); const sod = startOfDay(new Date()).getTime();
+    return {
+      sessions: fs.filter((s) => s.completed).length, focusMs: fs.reduce((a, s) => a + s.ms, 0),
+      tasks: S.tasks.filter((t) => t.status === 'completed').length, best: bestStreak(),
+      dayGoal: focusMsBetween(sod, sod + DAY) >= S.settings.goals.dailyFocusMin * MIN,
+      weekGoal: focusMsBetween(ws, we) >= S.settings.goals.weeklyFocusHours * HOUR,
+      eye: S.eyeLog.filter((e) => e.action === 'completed').length,
+    };
+  }
+  function checkAchievements() {
+    const m = metrics(); let changed = false;
+    ACH.forEach((a) => {
+      if (!S.ach[a.id] && a.test(m)) {
+        S.ach[a.id] = Date.now(); changed = true;
+        notify('achievements', `Achievement: ${a.name}`, a.desc, { soundKind: 'achieve' });
+      }
+    });
+    // daily goal notification (once per day)
+    const k = 'goal:' + dayKey(new Date());
+    if (m.dayGoal && !S.sent[k]) { S.sent[k] = 1; save('sent'); notify('achievements', 'Daily focus goal reached', `You've focused ${S.settings.goals.dailyFocusMin}+ minutes today. Nice pacing.`); }
+    if (changed) save('ach');
+  }
+
+  /* ============ 6. Notifications & reminders ============ */
+  const NOTIF_CATS = {
+    upcoming: ['Upcoming scheduled tasks', 'i-cal'], start: ['Task start times', 'i-play'], endApproach: ['Task end times', 'i-clock'],
+    overdue: ['Overdue tasks', 'i-flag'], deadline: ['Task deadlines', 'i-flag'], pomodoro: ['Pomodoro session completed', 'i-focus'],
+    breakDone: ['Break completed', 'i-moon'], screenBreak: ['Screen Break Reminders', 'i-eye'], daily: ['Daily productivity reminder', 'i-tasks'], achievements: ['Achievements & goals', 'i-trophy'],
+  };
+  const DND_BYPASS = ['pomodoro', 'breakDone', 'screenBreak'];
+  const notifSupported = 'Notification' in window;
+  const notifPerm = () => (notifSupported ? Notification.permission : 'unsupported');
+
+  function notify(cat, title, body = '', opts = {}) {
+    if (!S.settings.notifications.categories[cat]) return;
+    const n = { id: uid(), ts: Date.now(), cat, title, body, read: false };
+    S.notifs.unshift(n); S.notifs = S.notifs.slice(0, 150); save('notifs'); updateBell();
+    const held = dndActive() && !DND_BYPASS.includes(cat);
+    if (held) return; // simulated DND: held silently in history
+    const sounds = S.settings.general.sounds && S.settings.notifications.sound;
+    if (sounds && !opts.silent) CadenceAudio.chime(opts.soundKind || 'notify', S.settings.general.chimeVolume);
+    if (document.visibilityState === 'hidden' && notifPerm() === 'granted') {
+      try { const sys = new Notification(title, { body, tag: opts.tag || n.id, silent: true }); sys.onclick = () => { window.focus(); sys.close(); if (opts.onClick) opts.onClick(); }; return; } catch (e) { /* fall through to in-app */ }
+    }
+    if (opts.noToast) return;
+    toast(title, body, cat === 'overdue' ? 'err' : '', { actions: opts.actions });
+  }
+  function updateBell() {
+    const n = S.notifs.filter((x) => !x.read).length; const b = $('#bellBadge');
+    b.hidden = !n; b.textContent = n > 99 ? '99+' : n;
+  }
+  function openDrawer() {
+    renderNotifs(); $('#notifDrawer').hidden = false; $('#scrim').hidden = false; $('#notifClose').focus();
+  }
+  function closeDrawer() { $('#notifDrawer').hidden = true; $('#scrim').hidden = true; }
+  function renderNotifs() {
+    const p = notifPerm();
+    $('#notifPermissionNote').innerHTML = p === 'granted' ? 'System notifications are on while Cadence is in the background. Delivery when the tab is closed or the browser is suspended is not guaranteed.'
+      : p === 'unsupported' ? 'This browser does not support system notifications, so alerts appear inside Cadence.'
+      : `System notifications are ${p === 'denied' ? 'blocked' : 'off'} — alerts appear inside Cadence. ${p !== 'denied' ? '<button class="widget-link" data-action="askNotif">Enable</button>' : ''}`;
+    $('#notifList').innerHTML = S.notifs.length ? S.notifs.map((n) => `
+      <div class="notif ${n.read ? 'read' : 'unread'}" data-action="readNotif" data-id="${n.id}">
+        <div class="ic">${icon((NOTIF_CATS[n.cat] || ['', 'i-bell'])[1])}</div>
+        <div class="b"><div class="t">${esc(n.title)}</div>${n.body ? `<div class="m">${esc(n.body)}</div>` : ''}<div class="w">${esc(fmtWhen(n.ts))}${n.read ? '' : ' · unread'}</div></div>
+        <button class="icon-btn sm" data-action="delNotif" data-id="${n.id}" aria-label="Remove">${icon('i-x')}</button>
+      </div>`).join('') : emptyState('i-bell', 'All caught up', 'Reminders and session alerts will appear here.');
+  }
+  async function askNotifPermission() {
+    if (!notifSupported) { toast('Not supported', 'This browser has no Notifications API — in-app alerts will be used.', 'err'); return; }
+    try { const r = await Notification.requestPermission(); toast(r === 'granted' ? 'Notifications enabled' : 'Notifications not allowed', r === 'granted' ? 'You will get system alerts while Cadence is in the background.' : 'Cadence will show in-app alerts instead.', r === 'granted' ? 'ok' : ''); }
+    catch (e) { toast('Could not request permission', 'In-app alerts will be used.', 'err'); }
+    renderAll(); if (!$('#notifDrawer').hidden) renderNotifs();
+  }
+
+  function onceKey(k) { if (S.sent[k]) return false; S.sent[k] = Date.now(); save('sent'); return true; }
+  function checkReminders() {
+    const now = Date.now(); const ns = S.settings.notifications; let overdueBatch = [];
+    S.tasks.forEach((t) => {
+      if (t.status === 'completed') return;
+      if (isScheduled(t)) {
+        const st = tms(t.start), en = tms(t.end);
+        if (t.reminder.start != null && t.reminder.start > 0) {
+          const at = st - t.reminder.start * MIN;
+          if (now >= at && now < st && onceKey(`up:${t.id}:${t.start}`)) notify('upcoming', `Starting ${t.reminder.start >= 60 ? 'in ' + fmtDur(st - now) : 'in ' + Math.max(1, Math.round((st - now) / MIN)) + ' min'}`, `${t.title} · ${fmtRange(t.start, t.end)}`);
+        }
+        if (t.reminder.start != null && now >= st && now < Math.min(en, st + 30 * MIN) && onceKey(`st:${t.id}:${t.start}`)) {
+          notify('start', 'Task starting now', t.title, { actions: [{ label: 'Start Focus Mode', fn: () => openFocusSetup(t.id) }, { label: 'Open task', fn: () => openTaskForm(t.id) }] });
+        }
+        if (t.reminder.end) {
+          if (ns.endLead > 0 && now >= en - ns.endLead * MIN && now < en && now > st && onceKey(`en:${t.id}:${t.end}`)) notify('endApproach', `Ending in ${Math.max(1, Math.round((en - now) / MIN))} min`, `${t.title} is scheduled to end at ${fmtTime(en)}.`);
+          if (now >= en && now < en + 2 * HOUR && onceKey(`ep:${t.id}:${t.end}`)) notify('endApproach', 'Scheduled time has ended', `${t.title} — mark it done, or keep working (it won't be completed automatically).`, { actions: [{ label: 'Mark done', fn: () => setStatus(t, 'completed') }, { label: 'Postpone', fn: () => openPostpone(t.id) }] });
+        }
+      }
+      if (t.due) {
+        const du = tms(t.due);
+        if (now >= du - ns.deadlineLead * MIN && now < du && onceKey(`dl:${t.id}:${t.due}`)) notify('deadline', `Due ${fmtDur(du - now) === '0m' ? 'now' : 'in ' + fmtDur(du - now)}`, t.title);
+      }
+      if (isOverdue(t, now) && !S.sent[`od:${t.id}:${t.due || t.end}`]) { S.sent[`od:${t.id}:${t.due || t.end}`] = now; overdueBatch.push(t); }
+    });
+    if (overdueBatch.length) {
+      save('sent');
+      if (overdueBatch.length <= 2) overdueBatch.forEach((t) => notify('overdue', 'Task overdue', `${t.title} was due ${fmtWhen(deadlineOf(t))}.`, { actions: [{ label: 'Postpone', fn: () => openPostpone(t.id) }] }));
+      else notify('overdue', `${overdueBatch.length} tasks are overdue`, overdueBatch.slice(0, 3).map((t) => t.title).join(', ') + (overdueBatch.length > 3 ? '…' : ''), { actions: [{ label: 'Review', fn: () => { S.ui.taskView = 'overdue'; go('tasks'); } }] });
+    }
+    // daily productivity reminder
+    const [hh, mm] = (ns.dailyTime || '09:00').split(':').map(Number); const at = startOfDay(new Date()); at.setHours(hh || 0, mm || 0);
+    if (now >= at.getTime() && now < at.getTime() + 3 * HOUR && onceKey('daily:' + dayKey(now))) {
+      const today = S.tasks.filter((t) => t.status !== 'completed' && touchesDay(t, new Date())).length;
+      notify('daily', 'Plan your day', today ? `You have ${today} task${today > 1 ? 's' : ''} today. Pick one to start with.` : 'No tasks scheduled today yet — add one to set your intention.');
+    }
+    // prune old sent keys
+    const cutoff = now - 30 * DAY; let pruned = false;
+    Object.keys(S.sent).forEach((k) => { if (S.sent[k] < cutoff) { delete S.sent[k]; pruned = true; } }); if (pruned) save('sent');
+  }
+
+  /* ============ 7. Pomodoro timer & Focus Mode ============ */
+  const PHASE_LABEL = { focus: 'Focus', short: 'Short break', long: 'Long break' };
+  function phaseTotal(phase) {
+    const p = S.settings.pomodoro;
+    if (phase === 'focus') return (S.focus.active ? S.focus.duration : p.focus) * MIN;
+    return (phase === 'short' ? p.short : p.long) * MIN;
+  }
+  function remaining(now = Date.now()) {
+    const t = S.timer;
+    if (t.status === 'running') return Math.max(0, t.endAt - now);
+    if (t.status === 'paused') return t.remaining;
+    return phaseTotal(t.phase);
+  }
+  const totalMs = () => (S.timer.status === 'idle' ? phaseTotal(S.timer.phase) : S.timer.total);
+  const timerTask = () => (S.timer.taskId ? getTask(S.timer.taskId) : null);
+  const restrictionsActive = () => S.focus.active && S.timer.phase === 'focus' && S.timer.status !== 'idle';
+  const dndActive = () => restrictionsActive() && S.focus.dnd;
+  const appAccessible = (id) => !restrictionsActive() || !!S.focus.apps[id];
+
+  function startTimer(at = Date.now()) {
+    const t = S.timer; t.total = phaseTotal(t.phase); t.endAt = at + t.total; t.status = 'running'; t.phaseStartedAt = at; t.awaiting = null;
+    if (t.phase === 'focus') { if (S.settings.focusMode.trackWork) startWork(timerTask(), 'timer', at); musicForPhase('focus'); }
+    else musicForPhase('break');
+    save('timer'); renderLive(true);
+  }
+  function pauseTimer() {
+    const t = S.timer; if (t.status !== 'running') return;
+    t.remaining = Math.max(0, t.endAt - Date.now()); t.status = 'paused';
+    if (t.phase === 'focus') stopWork(timerTask(), Date.now(), false, 'timer');
+    save('timer'); renderLive(true);
+  }
+  function resumeTimer() {
+    const t = S.timer; if (t.status !== 'paused') return;
+    t.endAt = Date.now() + t.remaining; t.status = 'running';
+    if (t.phase === 'focus' && S.settings.focusMode.trackWork) startWork(timerTask(), 'timer');
+    save('timer'); renderLive(true);
+  }
+  function recordSession(type, ms, at, completed) {
+    S.sessions.push({ id: uid(), type, taskId: S.timer.taskId || null, start: at - ms, end: at, ms: Math.round(ms), completed });
+    if (type === 'focus') { const tk = timerTask(); if (tk) { tk.focusMs += ms; save('tasks'); } }
+    save('sessions');
+  }
+  function elapsedMs() { const t = S.timer; return t.status === 'idle' ? 0 : t.total - remaining(); }
+  function resetTimer(silent) {
+    const t = S.timer; const el = elapsedMs();
+    if (t.phase === 'focus' && t.status !== 'idle' && el >= MIN) recordSession('focus', el, Date.now(), false);
+    if (t.phase === 'focus') stopWork(timerTask(), Date.now(), false, 'timer');
+    t.status = 'idle'; t.awaiting = null; save('timer'); renderLive(true);
+    if (!silent && el >= MIN && t.phase === 'focus') toast('Session reset', `${fmtDur(el)} of focus time was still counted.`);
+  }
+  function setPhase(phase) { if (S.timer.status !== 'idle') resetTimer(true); S.timer.phase = phase; save('timer'); renderLive(true); }
+  function skipPhase() {
+    const t = S.timer;
+    if (t.phase === 'focus') {
+      const el = elapsedMs(); if (el >= MIN) recordSession('focus', el, Date.now(), false);
+      stopWork(timerTask(), Date.now(), false, 'timer');
+      t.phase = (t.cycle + 1) % S.settings.pomodoro.interval === 0 ? 'long' : 'short'; t.status = 'idle';
+      save('timer'); renderLive(true); promptBreak();
+    } else {
+      if (t.phase === 'long') t.cycle = 0;
+      t.phase = 'focus'; t.status = 'idle'; save('timer'); renderLive(true);
+      if (S.focus.active) promptNextFocus();
+    }
+  }
+  function completePhase(at) {
+    const t = S.timer; const phase = t.phase; const sounds = S.settings.general.sounds && S.settings.general.timerSound;
+    if (phase === 'focus') {
+      recordSession('focus', t.total, at, true);
+      stopWork(timerTask(), at, false, 'timer');
+      t.cycle = (t.cycle || 0) + 1;
+      const next = t.cycle % S.settings.pomodoro.interval === 0 ? 'long' : 'short';
+      const tk = timerTask();
+      notify('pomodoro', 'Focus session complete', `${tk ? tk.title + ' · ' : ''}${fmtDur(t.total)} focused. Time for a ${next === 'long' ? 'long' : 'short'} break.`, { silent: true });
+      if (sounds) CadenceAudio.chime('focusEnd', S.settings.general.chimeVolume);
+      buzz([180, 90, 180]);
+      t.phase = next; t.status = 'idle';
+      if (S.settings.pomodoro.autoTransition) { startTimer(at); breakToast(); }
+      else { t.awaiting = 'break'; save('timer'); promptBreak(); }
+    } else {
+      recordSession(phase, t.total, at, true);
+      if (phase === 'long') t.cycle = 0;
+      notify('breakDone', 'Break finished', S.focus.active ? 'Ready to resume Focus Mode?' : 'Ready for another focus session?', { silent: true });
+      if (sounds) CadenceAudio.chime('breakEnd', S.settings.general.chimeVolume);
+      buzz([120, 80, 120]);
+      t.phase = 'focus'; t.status = 'idle'; t.awaiting = 'focus'; save('timer');
+      promptNextFocus();
+    }
+    checkAchievements(); save('timer'); renderLive(true);
+  }
+  function randomSuggestion() { const l = S.settings.breakSuggestions; return l.length ? l[Math.floor(Math.random() * l.length)] : 'Take a moment to rest.'; }
+  function breakToast() {
+    toast(`${PHASE_LABEL[S.timer.phase]} started`, `${randomSuggestion()}${S.focus.active ? ' DND is off and all apps are accessible (simulated).' : ''}`, 'ok', { actions: [{ label: 'Skip break', fn: skipPhase }] });
+  }
+  async function promptBreak() {
+    const ph = S.timer.phase; const len = fmtDur(phaseTotal(ph));
+    const v = await choiceDialog({ id: 'prompt', title: 'Focus session complete', message: `<p>Nice work. Take a ${len} ${ph === 'long' ? 'long' : 'short'} break?</p><div class="break-suggest" style="margin-top:12px">${icon('i-moon')}<div><b>Suggestion</b>${esc(randomSuggestion())}</div></div>`,
+      choices: [{ label: 'Skip break', value: 'skip' }, { label: `Start ${ph === 'long' ? 'long' : 'short'} break`, value: 'start', kind: 'btn-warm' }] });
+    if (S.timer.status !== 'idle' || S.timer.phase === 'focus') return;
+    if (v === 'start') { startTimer(); breakToast(); }
+    else if (v === 'skip') { if (ph === 'long') S.timer.cycle = 0; S.timer.phase = 'focus'; S.timer.awaiting = null; save('timer'); renderLive(true); if (S.focus.active) promptNextFocus(); }
+    else { S.timer.awaiting = null; save('timer'); }
+  }
+  async function promptNextFocus() {
+    const fm = S.focus.active;
+    const choices = fm
+      ? [{ label: 'End Focus Mode', value: 'end' }, { label: 'Change settings', value: 'change' }, { label: 'Resume Focus Mode', value: 'resume', kind: 'btn-primary' }]
+      : [{ label: 'Not now', value: 'no' }, { label: 'Focus Mode…', value: 'setup' }, { label: 'Start focus session', value: 'start', kind: 'btn-primary' }];
+    const tk = timerTask();
+    const v = await choiceDialog({ id: 'prompt', title: 'Break is over', message: fm
+      ? `<p>Resume Focus Mode with your previous settings?</p><p class="small muted" style="margin-top:6px">${tk ? esc(tk.title) + ' · ' : ''}${S.focus.duration} min · DND ${S.focus.dnd ? 'on' : 'off'} · ${APPS.filter((a) => S.focus.apps[a.id]).length} apps accessible</p>`
+      : '<p>Want to start another focus session?</p>', choices });
+    if (S.timer.status !== 'idle') return;
+    S.timer.awaiting = null; save('timer');
+    if (v === 'resume' || v === 'start') startTimer();
+    else if (v === 'change' || v === 'setup') openFocusSetup(S.focus.taskId || S.timer.taskId, true);
+    else if (v === 'end') endFocusMode(true);
+  }
+
+  function musicForPhase(kind) {
+    if (kind === 'focus') {
+      if (S.focus.active && S.focus.music && S.focus.music !== 'none' && S.settings.focusMode.autoMusic) {
+        const cur = CadenceAudio.current;
+        if (!cur || cur.category !== S.focus.music) playCategory(S.focus.music); else if (!CadenceAudio.playing) musicResume();
+      } else if (music.pausedForBreak) musicResume();
+      music.pausedForBreak = false;
+    } else if (S.settings.music.pauseOnBreak && CadenceAudio.playing) { CadenceAudio.pause(); music.pausedForBreak = true; }
+  }
+
+  function openFocusSetup(taskId, isResume) {
+    const editing = S.focus.active && S.timer.status !== 'idle';
+    const cfg = S.focus.active ? clone(S.focus) : { taskId: taskId || S.timer.taskId || null, duration: S.settings.focusMode.defaultDuration, music: S.settings.music.category, dnd: S.settings.focusMode.dnd, apps: clone(S.focus.apps || S.settings.focusMode.apps) };
+    if (taskId) cfg.taskId = taskId;
+    const open = S.tasks.filter((t) => t.status !== 'completed');
+    const musicOpts = [['none', 'No music']].concat(CadenceAudio.library.map((c) => [c.id, c.name]));
+    const body = `
+      <div class="sim-note">${icon('i-lock')}<div>Do Not Disturb and app access are <b>simulated inside Cadence</b>. A web app can't change your phone's DND or block other installed apps.</div></div>
+      <label class="field"><span>1. Task</span><select class="select" name="task"><option value="">No specific task</option>${open.map((t) => `<option value="${t.id}" ${cfg.taskId === t.id ? 'selected' : ''}>${esc(t.title)}</option>`).join('')}</select></label>
+      <div class="field"><span class="field-label">2. Focus duration</span>
+        <div class="row wrap"><div class="pill-group" id="durPills">${[15, 25, 45, 50, 60, 90].map((m) => `<button type="button" class="pill" data-dur="${m}" aria-pressed="${cfg.duration === m}">${m} min</button>`).join('')}</div>
+        <input class="input" type="number" min="1" max="240" name="duration" value="${cfg.duration}" style="width:96px" aria-label="Custom minutes"></div>
+        ${editing ? '<span class="field-hint">Changing the duration adjusts the session that is running now.</span>' : ''}</div>
+      <label class="field"><span>3. Background music</span><select class="select" name="music">${musicOpts.map(([v, l]) => `<option value="${v}" ${cfg.music === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <div class="set-row" style="padding:4px 0;border:0"><div class="lbl"><b>4. Do Not Disturb (simulated)</b><span>Holds non-essential Cadence alerts in your notification history during focus.</span></div><div class="ctl">${sw('name="dnd"', cfg.dnd)}</div></div>
+      <div class="field"><span class="field-label">5. Apps that stay accessible</span>
+        <div class="app-toggle-list">${APPS.map((a) => `<label class="app-toggle"><input type="checkbox" name="app" value="${a.id}" ${cfg.apps[a.id] ? 'checked' : ''}>${icon(a.icon)}${a.name}</label>`).join('')}</div></div>`;
+    const m = openModal({ title: editing ? 'Focus settings' : isResume ? 'Next focus session' : 'Set up Focus Mode', body, id: 'focus-setup',
+      foot: `<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-go>${editing ? 'Apply changes' : icon('i-play') + 'Start focusing'}</button>` });
+    const durIn = m.el.querySelector('[name=duration]');
+    $('#durPills', m.el).addEventListener('click', (e) => { const b = e.target.closest('[data-dur]'); if (!b) return; durIn.value = b.dataset.dur; $$('[data-dur]', m.el).forEach((x) => x.setAttribute('aria-pressed', x === b)); });
+    durIn.addEventListener('input', () => $$('[data-dur]', m.el).forEach((x) => x.setAttribute('aria-pressed', x.dataset.dur === durIn.value)));
+    m.el.querySelector('[data-go]').onclick = () => {
+      const dur = clamp(Math.round(+durIn.value || 25), 1, 240);
+      const apps = {}; APPS.forEach((a) => { apps[a.id] = !!m.el.querySelector(`[name=app][value=${a.id}]`).checked; });
+      const next = { taskId: m.el.querySelector('[name=task]').value || null, duration: dur, music: m.el.querySelector('[name=music]').value, dnd: m.el.querySelector('[name=dnd]').checked, apps };
+      m.close(true);
+      if (editing) applyFocusChanges(next); else startFocusMode(next);
+    };
+  }
+  function startFocusMode(cfg) {
+    if (S.timer.status !== 'idle') resetTimer(true);
+    if (S.timer.taskId && S.timer.taskId !== cfg.taskId) stopWork(timerTask(), Date.now(), false, 'timer');
+    Object.assign(S.focus, cfg, { active: true, startedAt: Date.now(), resumeAfterBreak: true });
+    S.settings.focusMode.apps = clone(cfg.apps); save('settings');
+    S.timer.taskId = cfg.taskId; S.timer.phase = 'focus';
+    save('focus'); startTimer();
+    go('focus');
+    toast('Focus Mode on', `${cfg.duration} min${cfg.dnd ? ' · DND on (simulated)' : ''}`, 'ok');
+  }
+  function applyFocusChanges(cfg) {
+    const t = S.timer; const prevTask = t.taskId;
+    if (prevTask !== cfg.taskId && t.phase === 'focus') { stopWork(timerTask(), Date.now(), false, 'timer'); t.taskId = cfg.taskId; if (t.status === 'running' && S.settings.focusMode.trackWork) startWork(timerTask(), 'timer'); }
+    const durChanged = cfg.duration !== S.focus.duration;
+    const musicChanged = cfg.music !== S.focus.music;
+    Object.assign(S.focus, cfg); S.settings.focusMode.apps = clone(cfg.apps);
+    if (durChanged && t.phase === 'focus' && t.status !== 'idle') {
+      const el = elapsedMs(); t.total = cfg.duration * MIN;
+      if (t.status === 'running') t.endAt = Date.now() + Math.max(0, t.total - el); else t.remaining = Math.max(0, t.total - el);
+    }
+    if (musicChanged && t.phase === 'focus' && t.status === 'running') { if (cfg.music === 'none') CadenceAudio.pause(); else playCategory(cfg.music); }
+    save('focus', 'timer', 'settings'); renderLive(true); renderAll();
+    toast('Focus settings updated', '', 'ok');
+  }
+  async function endFocusMode(skipConfirm) {
+    if (!skipConfirm && S.timer.status !== 'idle') {
+      const ok = await confirmDialog({ title: 'End focus session?', message: `You've focused for ${fmtDur(S.timer.phase === 'focus' ? elapsedMs() : 0)} this session. Time already focused will still be counted.`, confirmText: 'End session' });
+      if (!ok) return;
+    }
+    const focusMs = S.sessions.filter((s) => s.type === 'focus' && s.end >= S.focus.startedAt).reduce((a, s) => a + s.ms, 0) + (S.timer.phase === 'focus' ? elapsedMs() : 0);
+    resetTimer(true); S.timer.phase = 'focus'; S.focus.active = false; save('focus', 'timer');
+    if (S.settings.music.pauseOnBreak && CadenceAudio.playing) CadenceAudio.pause();
+    renderAll(); toast('Focus Mode ended', `Total this run: ${fmtDur(focusMs)}. All apps accessible again.`, 'ok');
+  }
+
+  /* --- timer display helpers --- */
+  function ringHTML(size, stroke) {
+    const r = (size - stroke) / 2, c = 2 * Math.PI * r;
+    return `<div class="ring js-ring" style="width:${size}px;height:${size}px" data-c="${c}">
+      <svg viewBox="0 0 ${size} ${size}"><circle class="ring-bg" cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke-width="${stroke}"/>
+      <circle class="ring-fg" cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke-width="${stroke}" stroke-dasharray="${c}" stroke-dashoffset="${c}"/></svg>
+      <div class="ring-center"><div class="label js-t-label"></div><div class="time js-t-time" style="font-size:${Math.round(size / 4.6)}px"></div><div class="tiny muted js-t-sub"></div></div></div>`;
+  }
+  function timerControlsHTML() {
+    const t = S.timer; const b = [];
+    if (t.status === 'idle') b.push(`<button class="btn btn-primary" data-action="timerStart">${icon('i-play')}Start${t.phase !== 'focus' ? ' break' : ''}</button>`);
+    if (t.status === 'running') b.push(`<button class="btn btn-soft" data-action="timerPause">${icon('i-pause')}Pause</button>`);
+    if (t.status === 'paused') b.push(`<button class="btn btn-primary" data-action="timerResume">${icon('i-play')}Resume</button>`);
+    if (t.status !== 'idle') b.push(`<button class="btn btn-ghost" data-action="timerReset" aria-label="Reset">${icon('i-reset')}Reset</button>`);
+    b.push(`<button class="btn btn-ghost" data-action="timerSkip" aria-label="${t.phase === 'focus' ? 'End focus early, go to break' : 'Skip break'}" title="${t.phase === 'focus' ? 'End early → break' : 'Skip break'}">${icon('i-skip')}</button>`);
+    return b.join('');
+  }
+  function dotsHTML() {
+    const n = S.settings.pomodoro.interval; const c = S.timer.cycle % n || (S.timer.cycle && S.timer.phase === 'long' ? n : 0);
+    return Array.from({ length: n }, (_, i) => `<i class="${i < c ? 'done' : ''}"></i>`).join('');
+  }
+  let lastCtrlSig = '';
+  function renderLive(force) {
+    const t = S.timer; const rem = remaining(); const tot = totalMs() || 1; const prog = clamp(1 - rem / tot, 0, 1);
+    const isBreak = t.phase !== 'focus';
+    $$('.js-ring').forEach((r) => { const c = +r.dataset.c; r.querySelector('.ring-fg').style.strokeDashoffset = c * (1 - prog); r.classList.toggle('break', isBreak); });
+    $$('.js-t-time').forEach((e) => (e.textContent = fmtClock(rem)));
+    $$('.js-t-label').forEach((e) => (e.textContent = PHASE_LABEL[t.phase] + (t.status === 'paused' ? ' · paused' : '')));
+    $$('.js-t-sub').forEach((e) => (e.textContent = t.status === 'running' ? `ends ${fmtTime(t.endAt)}` : t.status === 'paused' ? 'paused' : `${Math.round(tot / MIN)} min`));
+    const sig = `${t.status}|${t.phase}|${t.cycle}|${S.focus.active}|${S.settings.pomodoro.interval}`;
+    if (force || sig !== lastCtrlSig) {
+      lastCtrlSig = sig;
+      $$('.js-t-ctrl').forEach((e) => (e.innerHTML = timerControlsHTML()));
+      $$('.js-t-dots').forEach((e) => (e.innerHTML = dotsHTML()));
+      if (force) { if (ui.screen === 'focus') renderFocus(); if (ui.screen === 'home') renderActiveCard(); }
+    }
+    document.title = t.status === 'running' ? `${fmtClock(rem)} · ${PHASE_LABEL[t.phase]} — Cadence` : 'Cadence — Focus & Productivity';
+    const ac = $('.js-active-time'); if (ac) ac.textContent = fmtClock(rem);
+  }
+
+  /* ============ 8. Screen Break Reminder ============ */
+  let eyeTimerId = null;
+  function eyeEligible() {
+    const mode = S.settings.screenBreak.applyTo; const visible = document.visibilityState === 'visible';
+    const focusing = S.timer.status === 'running' && S.timer.phase === 'focus';
+    if (mode === 'focus') return focusing;
+    if (mode === 'general') return visible && !focusing;
+    return visible || focusing;
+  }
+  function eyeTick(now) {
+    const e = S.eye; const cfg = S.settings.screenBreak;
+    if (e.active) { if (now >= e.active.endAt) completeEye(false); return; }
+    const dt = e.lastTick ? clamp(now - e.lastTick, 0, 2 * MIN) : 0; e.lastTick = now;
+    if (!cfg.enabled || now < e.snoozeUntil) return;
+    if (eyeEligible()) e.accum += dt;
+    if (e.accum >= cfg.interval * MIN) triggerEye(now);
+    if (Math.random() < 0.1) save('eye');
+  }
+  function triggerEye(now = Date.now()) {
+    const cfg = S.settings.screenBreak; const e = S.eye;
+    e.active = { startedAt: now, endAt: now + cfg.duration * 1000, duration: cfg.duration, pausedTimer: false };
+    if (cfg.pauseTimer && S.timer.status === 'running') { pauseTimer(); e.active.pausedTimer = true; }
+    buzz(250);
+    save('eye');
+    notify('screenBreak', 'Screen break', `Look at something about 20 feet away for ${cfg.duration >= 60 ? fmtDur(cfg.duration * 1000) : cfg.duration + ' seconds'}.`, { soundKind: 'screen', tag: 'cadence-eye', noToast: true });
+    showEyeOverlay();
+  }
+  function endEye(action, extra = {}) {
+    const e = S.eye; if (!e.active) return;
+    const a = e.active; const now = Date.now();
+    S.eyeLog.push(Object.assign({ ts: now, action, ms: Math.min(now - a.startedAt, a.duration * 1000), planned: a.duration * 1000 }, extra)); S.eyeLog = S.eyeLog.slice(-1000);
+    e.active = null; e.lastTick = now;
+    if (action !== 'postponed') e.accum = 0;
+    if (a.pausedTimer && S.timer.status === 'paused') resumeTimer();
+    save('eye', 'eyeLog'); hideEyeOverlay(); checkAchievements(); if (ui.screen !== 'focus') renderAll(); else renderLive(true);
+  }
+  function completeEye(early) { if (!S.eye.active) return; endEye('completed', { early }); toast('Screen break done', S.timer.status === 'running' ? 'Your focus session continues.' : 'Welcome back.', 'ok'); }
+  function skipEye() { endEye('skipped'); }
+  function postponeEye(min) { const cfg = S.settings.screenBreak; min = min || cfg.postponeMin; S.eye.accum = Math.max(0, cfg.interval * MIN - min * MIN); endEye('postponed', { minutes: min }); toast('Screen break postponed', `Reminding you again in about ${min} min of screen time.`); }
+  function snoozeEye(ms, label) { S.eye.snoozeUntil = Date.now() + ms; if (S.eye.active) endEye('skipped'); save('eye'); renderAll(); toast('Screen Break Reminders paused', label); }
+  function showEyeOverlay() {
+    const o = $('#eyeOverlay'); const a = S.eye.active; if (!a) return;
+    o.innerHTML = `
+      <p class="eyebrow" style="color:#9FD3CB">Screen break</p>
+      <h2 id="eyeTitle">Rest your eyes</h2>
+      <div class="breath" aria-hidden="true"><div class="cd js-eye-cd"></div><div class="phase js-eye-phase">Breathe in</div></div>
+      <div class="eye-progress" style="margin-top:22px"><span class="js-eye-bar"></span></div>
+      <ol class="eye-steps">
+        <li><b>1</b>Look away from the screen.</li>
+        <li><b>2</b>Focus on something about 20 feet (6 m) away.</li>
+        <li><b>3</b>Blink slowly and relax your eyes.</li>
+        <li><b>4</b>Stretch your neck and shoulders.</li>
+      </ol>
+      <p class="small" style="opacity:.7">${a.pausedTimer ? 'Your Pomodoro timer is paused and resumes after this break.' : S.timer.status === 'running' ? 'Your Pomodoro timer keeps running.' : ''} This is a screen break, separate from Pomodoro breaks.</p>
+      <div class="eye-actions">
+        <button class="btn btn-primary" data-action="eyeDone">${icon('i-check')}Complete break</button>
+        <button class="btn" data-action="eyePostpone">Postpone ${S.settings.screenBreak.postponeMin} min</button>
+        <button class="btn" data-action="eyeSkip">Skip</button>
+        <button class="btn" data-action="eyeSettings">${icon('i-settings')}Adjust settings</button>
+      </div>`;
+    o.hidden = false; document.body.classList.add('no-scroll');
+    setTimeout(() => { const b = o.querySelector('[data-action=eyeDone]'); if (b) b.focus(); }, 50);
+    clearInterval(eyeTimerId); eyeTimerId = setInterval(updateEyeOverlay, 250); updateEyeOverlay();
+  }
+  function updateEyeOverlay() {
+    const a = S.eye.active; if (!a) return;
+    const left = Math.max(0, a.endAt - Date.now()); const s = Math.ceil(left / 1000);
+    const cd = $('.js-eye-cd'); if (cd) cd.textContent = s >= 60 ? fmtSec(s) : s;
+    const bar = $('.js-eye-bar'); if (bar) bar.style.width = `${(1 - left / (a.duration * 1000)) * 100}%`;
+    const ph = $('.js-eye-phase'); if (ph) ph.textContent = ((Date.now() - a.startedAt) % 8000) < 4000 ? 'Breathe in' : 'Breathe out';
+    if (left <= 0) completeEye(false);
+  }
+  function hideEyeOverlay() { clearInterval(eyeTimerId); $('#eyeOverlay').hidden = true; $('#eyeOverlay').innerHTML = ''; if (!modalStack.length) document.body.classList.remove('no-scroll'); }
+  function eyeStatus() {
+    const cfg = S.settings.screenBreak; const now = Date.now();
+    if (!cfg.enabled) return { state: 'off', text: 'Turned off' };
+    if (now < S.eye.snoozeUntil) return { state: 'snoozed', text: `Paused until ${fmtTime(S.eye.snoozeUntil)}${dayKey(S.eye.snoozeUntil) !== dayKey(now) ? ' ' + relDay(S.eye.snoozeUntil).toLowerCase() : ''}` };
+    const left = Math.max(0, cfg.interval * MIN - S.eye.accum);
+    return { state: eyeEligible() ? 'counting' : 'waiting', text: `Next in ~${Math.max(1, Math.ceil(left / MIN))} min of ${cfg.applyTo === 'focus' ? 'focus' : 'screen'} time`, left };
+  }
+
+  /* ============ 9. Music player ============ */
+  const music = { pausedForBreak: false };
+  const CAT_ART = { lofi: 'linear-gradient(135deg,#d397fa,#8364e8)', ambient: 'linear-gradient(135deg,#8FB8F0,#6A4BD8)', rain: 'linear-gradient(135deg,#7EA6E0,#4F5FC4)', nature: 'linear-gradient(135deg,#8DD3B0,#3FA07A)', white: 'linear-gradient(135deg,#B9B2CC,#6B6383)', instrumental: 'linear-gradient(135deg,#F2B37A,#C46BD6)', piano: 'linear-gradient(135deg,#4A3F6B,#1D1730)', cafe: 'linear-gradient(135deg,#D9A273,#8A5A3C)', ocean: 'linear-gradient(135deg,#6FC3E0,#2F6FB8)', forest: 'linear-gradient(135deg,#7CC48F,#2E6B45)', fav: 'linear-gradient(135deg,#F59AC0,#d397fa)' };
+  function musicList(cat) {
+    if (cat === 'fav') return S.music.favorites.map((id) => CadenceAudio.findTrack(id)).filter(Boolean);
+    const c = CadenceAudio.library.find((x) => x.id === cat); return c ? c.tracks : [];
+  }
+  async function playTrack(id) {
+    const ok = await CadenceAudio.play(id);
+    if (!ok) { toast('Audio unavailable', 'This browser does not support the Web Audio API.', 'err'); return; }
+    S.music.trackId = id; save('music'); renderMusic();
+  }
+  function playCategory(cat) {
+    S.music.category = cat; const list = musicList(cat); if (!list.length) return;
+    const fav = list.find((t) => S.music.favorites.includes(t.id));
+    playTrack((S.music.shuffle ? list[Math.floor(Math.random() * list.length)] : fav || list[0]).id);
+  }
+  async function musicResume() {
+    if (CadenceAudio.current) { await CadenceAudio.resume(); renderMusic(); }
+    else if (S.music.trackId && CadenceAudio.findTrack(S.music.trackId)) playTrack(S.music.trackId);
+    else playCategory(S.music.category || S.settings.music.category);
+  }
+  function musicToggle() { if (CadenceAudio.playing) { CadenceAudio.pause(); music.pausedForBreak = false; renderMusic(); } else musicResume(); }
+  function musicStep(dir) {
+    const cur = CadenceAudio.current || CadenceAudio.findTrack(S.music.trackId);
+    let list = musicList(S.music.category); if (!list.length) list = cur ? musicList(cur.category) : [];
+    if (!list.length) return;
+    if (S.music.shuffle && list.length > 1) { let n; do n = list[Math.floor(Math.random() * list.length)]; while (cur && n.id === cur.id); playTrack(n.id); return; }
+    const i = cur ? list.findIndex((t) => t.id === cur.id) : -1;
+    playTrack(list[(i + dir + list.length) % list.length].id);
+  }
+  CadenceAudio.on((ev) => {
+    if (ev.type === 'ended') { if (S.music.repeat) playTrack(ev.track.id); else musicStep(1); }
+    else renderMusic();
+  });
+  function toggleFav(id) {
+    const f = S.music.favorites; const i = f.indexOf(id); if (i >= 0) f.splice(i, 1); else f.push(id);
+    save('music'); renderMusic();
+  }
+  function playerHTML(compact) {
+    const cur = CadenceAudio.current || CadenceAudio.findTrack(S.music.trackId);
+    const playing = CadenceAudio.playing; const cat = S.music.category;
+    const list = musicList(cat);
+    const cats = [['fav', '♥ Favorites']].concat(CadenceAudio.library.map((c) => [c.id, c.name]));
+    if (!CadenceAudio.supported) return emptyState('i-music', 'Audio not supported', 'This browser lacks the Web Audio API, so focus music is unavailable.');
+    return `<div class="player">
+      <div class="player-now">
+        <div class="art ${playing ? 'playing' : ''}" style="background:${CAT_ART[cur ? cur.category : cat] || CAT_ART.lofi}">${icon('i-music')}</div>
+        <div style="flex:1;min-width:0"><div class="t">${cur ? esc(cur.title) : 'Nothing playing'}</div><div class="c">${cur ? esc(cur.categoryName) + (playing ? ' · playing' : ' · paused') : 'Pick a category below'}</div></div>
+        ${cur ? `<button class="icon-btn ${S.music.favorites.includes(cur.id) ? 'on' : ''}" data-action="musicFav" data-id="${cur.id}" aria-label="${S.music.favorites.includes(cur.id) ? 'Remove from favorites' : 'Add to favorites'}" aria-pressed="${S.music.favorites.includes(cur.id)}">${icon(S.music.favorites.includes(cur.id) ? 'i-heart-fill' : 'i-heart')}</button>` : ''}
+      </div>
+      <div class="prog-row"><span class="js-mp-time">${fmtSec(CadenceAudio.position())}</span><input type="range" class="range js-mp-seek" min="0" max="${cur ? cur.length : 1}" value="${Math.floor(CadenceAudio.position())}" aria-label="Track progress" ${cur ? '' : 'disabled'}><span>${cur ? fmtSec(cur.length) : '0:00'}</span></div>
+      <div class="player-controls">
+        <button class="icon-btn ${S.music.shuffle ? 'on' : ''}" data-action="musicShuffle" aria-label="Shuffle" aria-pressed="${S.music.shuffle}">${icon('i-shuffle')}</button>
+        <button class="icon-btn" data-action="musicPrev" aria-label="Previous track">${icon('i-prev')}</button>
+        <button class="play-btn" data-action="musicToggle" aria-label="${playing ? 'Pause' : 'Play'}">${icon(playing ? 'i-pause' : 'i-play')}</button>
+        <button class="icon-btn" data-action="musicNext" aria-label="Next track">${icon('i-next')}</button>
+        <button class="icon-btn ${S.music.repeat ? 'on' : ''}" data-action="musicRepeat" aria-label="Repeat track" aria-pressed="${S.music.repeat}">${icon('i-repeat')}</button>
+      </div>
+      <div class="prog-row">${icon('i-volume')}<input type="range" class="range js-mp-vol" min="0" max="100" value="${Math.round(S.music.volume * 100)}" aria-label="Volume"><span class="js-mp-volv">${Math.round(S.music.volume * 100)}%</span></div>
+      ${compact ? `<label class="field"><span class="sr-only">Category</span><select class="select" data-action-change="musicCat">${cats.map(([v, l]) => `<option value="${v}" ${cat === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`
+        : `<div class="cat-scroll">${cats.map(([v, l]) => `<button class="pill" data-action="musicCat" data-id="${v}" aria-pressed="${cat === v}">${l}</button>`).join('')}</div>
+      <div class="track-list">${list.length ? list.map((t) => `<button class="track ${cur && cur.id === t.id ? 'active' : ''}" data-action="musicPlay" data-id="${t.id}"><span class="tn">${esc(t.title)}</span>${S.music.favorites.includes(t.id) ? `<span class="fav">${icon('i-heart-fill')}</span>` : ''}<span class="tl">${fmtSec(t.length)}</span></button>`).join('') : `<p class="small muted" style="padding:8px">No favorites yet — tap the heart on a track you like.</p>`}</div>`}
+      <p class="tiny muted">All tracks are generated live in your browser (Web Audio) — royalty-free and offline.</p>
+    </div>`;
+  }
+  function renderMusic() {
+    $$('.js-music').forEach((e) => (e.innerHTML = playerHTML(e.dataset.compact === '1')));
+    const cur = CadenceAudio.current; const playing = CadenceAudio.playing;
+    const mini = (cls) => cur ? `<div class="art ${playing ? 'playing' : ''}" style="background:${CAT_ART[cur.category]}">${icon('i-music')}</div>
+      <div class="meta"><div class="t">${esc(cur.title)}</div><div class="c">${esc(cur.categoryName)}</div></div>
+      <button class="icon-btn" data-action="musicToggle" aria-label="${playing ? 'Pause' : 'Play'}">${icon(playing ? 'i-pause' : 'i-play')}</button>
+      <button class="icon-btn" data-action="musicNext" aria-label="Next">${icon('i-next')}</button>${cls}` : '';
+    const mp = $('#miniPlayer');
+    mp.hidden = !cur || ui.screen === 'focus';
+    mp.innerHTML = mini('<button class="icon-btn" data-action="musicStop" aria-label="Close player">' + icon('i-x') + '</button><div class="mp-bar"><span class="js-mp-bar"></span></div>');
+    document.body.classList.toggle('mini-on', !mp.hidden);
+  }
+  function updateMusicProgress() {
+    const cur = CadenceAudio.current; if (!cur) return;
+    const p = CadenceAudio.position();
+    $$('.js-mp-time').forEach((e) => (e.textContent = fmtSec(p)));
+    $$('.js-mp-seek').forEach((e) => { if (document.activeElement !== e) e.value = Math.floor(p); });
+    $$('.js-mp-bar').forEach((e) => (e.style.width = `${(p / cur.length) * 100}%`));
+  }
+  document.addEventListener('input', (e) => {
+    if (e.target.matches('.js-mp-vol')) {
+      S.music.volume = +e.target.value / 100; CadenceAudio.setVolume(S.music.volume); save('music');
+      $$('.js-mp-volv').forEach((x) => (x.textContent = e.target.value + '%')); $$('.js-mp-vol').forEach((x) => x !== e.target && (x.value = e.target.value));
+    }
+    if (e.target.matches('.js-mp-seek')) CadenceAudio.seek(+e.target.value);
+  });
+
+  /* ============ 10. Views ============ */
+  const QUOTES = [
+    ['It does not matter how slowly you go as long as you do not stop.', 'Confucius'],
+    ['Well begun is half done.', 'Aristotle'],
+    ['The journey of a thousand miles begins with a single step.', 'Lao Tzu'],
+    ['While we are postponing, life speeds by.', 'Seneca'],
+    ['Nothing will work unless you do.', 'Maya Angelou'],
+    ['Small deeds done are better than great deeds planned.', 'Peter Marshall'],
+    ['Do one thing at a time, and do it well.', 'Proverb'],
+    ['You don’t have to see the whole staircase, just take the first step.', 'Martin Luther King Jr.'],
+    ['Rest is not idleness.', 'John Lubbock'],
+    ['Focus on being productive instead of busy.', 'Tim Ferriss'],
+    ['Little by little, one travels far.', 'J. R. R. Tolkien'],
+    ['What we do every day matters more than what we do once in a while.', 'Gretchen Rubin'],
+    ['Begin anywhere.', 'John Cage'],
+    ['Energy flows where attention goes.', 'Proverb'],
+  ];
+  function greeting() { const h = new Date().getHours(); return h < 5 ? 'Good night' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : h < 22 ? 'Good evening' : 'Good night'; }
+
+  function taskMiniHTML(t, showWhen = 'schedule') {
+    const when = showWhen === 'due' && t.due ? `Due ${fmtWhen(t.due)}` : isScheduled(t) ? fmtRange(t.start, t.end) : t.due ? `Due ${fmtWhen(t.due)}` : t.category;
+    return `<div class="mini-item" data-action="editTask" data-id="${t.id}" role="button" tabindex="0">
+      <span class="bar" style="background:${catColor(t.category)}"></span>
+      <div class="tt"><div class="n ${t.status === 'completed' ? 'done' : ''}">${esc(t.title)}</div><div class="m">${esc(when)}${isOverdue(t) ? ' · <span style="color:var(--danger);font-weight:600">overdue</span>' : ''}</div></div>
+      <span class="chip chip-${t.priority}">${t.priority[0].toUpperCase()}</span></div>`;
+  }
+
+  const WIDGETS = {
+    pomodoro: () => ({ title: 'Pomodoro Timer', icon: 'i-focus', link: ['Focus Mode', 'openFocus'], body: `
+      <div class="row" style="justify-content:center">${ringHTML(168, 10)}</div>
+      <div class="session-dots js-t-dots"></div>
+      <select class="select" data-action-change="timerTask" aria-label="Task for this session" ${S.focus.active ? 'disabled' : ''}><option value="">No task selected</option>${S.tasks.filter((t) => t.status !== 'completed').map((t) => `<option value="${t.id}" ${S.timer.taskId === t.id ? 'selected' : ''}>${esc(t.title)}</option>`).join('')}</select>
+      <div class="timer-controls js-t-ctrl"></div>
+      <div class="pill-group" style="justify-content:center">${['focus', 'short', 'long'].map((p) => `<button class="pill" data-action="setPhase" data-id="${p}" aria-pressed="${S.timer.phase === p}">${PHASE_LABEL[p]}</button>`).join('')}</div>` }),
+    today: () => {
+      const list = S.tasks.filter((t) => touchesDay(t, new Date()) || t.status === 'inprogress').sort((a, b) => (a.status === 'completed') - (b.status === 'completed') || (tms(a.start) || 9e15) - (tms(b.start) || 9e15));
+      return { title: "Today's Tasks", icon: 'i-tasks', link: ['View all', 'goTodayTasks'], body: list.length ? `<div class="mini-list">${list.slice(0, 6).map((t) => taskMiniHTML(t)).join('')}</div>${list.length > 6 ? `<p class="small muted">+${list.length - 6} more</p>` : ''}` : emptyState('i-tasks', 'Nothing for today', 'Schedule a task or give one a due date today.', '<button class="btn btn-soft btn-sm" data-action="newTask">Add task</button>') };
+    },
+    upnext: () => {
+      const now = Date.now(); const list = S.tasks.filter((t) => t.status !== 'completed' && isScheduled(t) && tms(t.end) > now).sort((a, b) => tms(a.start) - tms(b.start)).slice(0, 5);
+      return { title: 'Upcoming Schedule', icon: 'i-cal', link: ['Calendar', 'goCalendar'], body: list.length ? `<div class="mini-list">${list.map((t) => taskMiniHTML(t)).join('')}</div>` : emptyState('i-cal', 'No scheduled tasks', 'Give a task a start and end time to see it here.') };
+    },
+    deadlines: () => {
+      const list = S.tasks.filter((t) => t.status !== 'completed' && t.due).sort((a, b) => tms(a.due) - tms(b.due)).slice(0, 5);
+      return { title: 'Upcoming Deadlines', icon: 'i-flag', body: list.length ? `<div class="mini-list">${list.map((t) => taskMiniHTML(t, 'due')).join('')}</div>` : emptyState('i-flag', 'No deadlines', 'Tasks with due dates will be listed here.') };
+    },
+    progress: () => {
+      const today = new Date(); const sod = startOfDay(today).getTime();
+      const list = S.tasks.filter((t) => touchesDay(t, today) || (t.completedAt && t.completedAt >= sod));
+      const done = list.filter((t) => t.status === 'completed');
+      const fm = focusMsBetween(sod, sod + DAY); const goal = S.settings.goals.dailyFocusMin;
+      const pct = list.length ? Math.round((done.length / list.length) * 100) : 0;
+      return { title: 'Daily Progress', icon: 'i-check', body: `
+        <div><div class="row between small"><span>Tasks done</span><b>${done.length} / ${list.length}</b></div><div class="progress" style="margin-top:6px"><span style="width:${pct}%"></span></div></div>
+        <div><div class="row between small"><span>Focus goal</span><b>${fmtDur(fm)} / ${fmtDur(goal * MIN)}</b></div><div class="progress warm" style="margin-top:6px"><span style="width:${clamp((fm / (goal * MIN)) * 100, 0, 100)}%"></span></div></div>
+        ${done.length ? `<div><p class="tiny muted" style="margin-bottom:4px">Completed today</p><div class="mini-list">${done.slice(0, 4).map((t) => taskMiniHTML(t)).join('')}</div></div>` : '<p class="small muted">Completed tasks will show up here.</p>'}` };
+    },
+    weekly: () => {
+      const ws = weekStartOf(new Date()); const goal = S.settings.goals.dailyFocusMin * MIN;
+      const days = Array.from({ length: 7 }, (_, i) => { const d = addDays(ws, i); const a = d.getTime(); return { d, ms: focusMsBetween(a, a + DAY), today: dayKey(d) === dayKey(new Date()) }; });
+      const total = days.reduce((a, x) => a + x.ms, 0); const tasks = tasksDoneBetween(ws.getTime(), ws.getTime() + 7 * DAY);
+      const max = Math.max(goal, ...days.map((x) => x.ms));
+      return { title: 'Weekly Productivity', icon: 'i-stats', link: ['Insights', 'goInsights'], body: `
+        <div class="row between"><div><b style="font-size:22px">${fmtDur(total)}</b><span class="small muted"> focused</span></div><div class="small muted">${tasks} task${tasks === 1 ? '' : 's'} done</div></div>
+        <div class="week-bars">${days.map((x) => `<div title="${fmtDay(x.d)}: ${fmtDur(x.ms)}">
+          <div class="b ${x.ms >= goal ? 'hit' : x.ms ? 'part' : ''}" style="height:${Math.max(4, (x.ms / max) * 70)}px"></div>
+          <span class="tiny ${x.today ? '' : 'muted'}" style="${x.today ? 'font-weight:700' : ''}">${x.d.toLocaleDateString(undefined, { weekday: 'narrow' })}</span></div>`).join('')}</div>
+        <div><div class="row between small"><span>Weekly goal</span><b>${fmtDur(total)} / ${S.settings.goals.weeklyFocusHours}h</b></div><div class="progress" style="margin-top:6px"><span style="width:${clamp((total / (S.settings.goals.weeklyFocusHours * HOUR)) * 100, 0, 100)}%"></span></div></div>` };
+    },
+    streak: () => {
+      const s = streak(); const best = bestStreak(); const days = focusDays(); const ws = weekStartOf(new Date());
+      return { title: 'Focus Streak', icon: 'i-flame', body: `
+        <div class="streak-big"><b>${s}</b><span class="muted">day${s === 1 ? '' : 's'} in a row</span></div>
+        <div class="week-dots">${Array.from({ length: 7 }, (_, i) => { const d = addDays(ws, i); return `<span class="${dayKey(d) === dayKey(new Date()) ? 'today' : ''}"><i class="${days.has(dayKey(d)) ? 'hit' : ''}"></i>${d.toLocaleDateString(undefined, { weekday: 'narrow' })}</span>`; }).join('')}</div>
+        <p class="small muted">${s ? `Best streak: ${best} day${best === 1 ? '' : 's'}. Complete one focus session a day to keep it going.` : 'Complete a focus session today to start a streak.'}</p>` };
+    },
+    music: () => ({ title: 'Focus Music', icon: 'i-music', body: `<div class="js-music" data-compact="1"></div>` }),
+    minical: () => {
+      const now = new Date(); const first = new Date(now.getFullYear(), now.getMonth(), 1); const start = weekStartOf(first);
+      const has = new Set(); S.tasks.forEach((t) => { if (t.status === 'completed') return; if (t.start) has.add(dayKey(t.start)); if (t.due) has.add(dayKey(t.due)); });
+      const dows = Array.from({ length: 7 }, (_, i) => addDays(start, i).toLocaleDateString(undefined, { weekday: 'narrow' }));
+      let cells = ''; for (let i = 0; i < 42; i++) { const d = addDays(start, i); const k = dayKey(d); const other = d.getMonth() !== now.getMonth();
+        cells += `<button class="mc-cell ${other ? 'other' : ''} ${k === dayKey(now) ? 'today' : ''}" data-action="calDay" data-id="${k}" aria-label="${fmtDay(d, { weekday: 'long', month: 'long', day: 'numeric' })}">${d.getDate()}${has.has(k) ? '<i></i>' : ''}</button>`; }
+      return { title: now.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }), icon: 'i-cal', link: ['Open', 'goCalendar'], body: `<div class="mc">${dows.map((d) => `<span class="mc-dow">${d}</span>`).join('')}${cells}</div>` };
+    },
+    quote: () => { const q = QUOTES[Math.floor(startOfDay(new Date()).getTime() / DAY) % QUOTES.length]; return { title: 'Daily Quote', icon: 'i-quote', body: `<div><p class="quote">“${esc(q[0])}”</p><p class="quote-by">— ${esc(q[1])}</p></div>` }; },
+    screenbreak: () => {
+      const st = eyeStatus(); const cfg = S.settings.screenBreak; const sod = startOfDay(new Date()).getTime();
+      const today = S.eyeLog.filter((e) => e.ts >= sod); const done = today.filter((e) => e.action === 'completed').length;
+      const pct = st.left != null ? clamp((1 - st.left / (cfg.interval * MIN)) * 100, 0, 100) : 0;
+      return { title: 'Screen Break Reminder', icon: 'i-eye', link: ['Settings', 'goEyeSettings'], body: `
+        <div class="row between"><span class="chip ${st.state === 'off' ? '' : st.state === 'snoozed' ? 'chip-warn' : 'chip-ok'}">${st.state === 'off' ? 'Off' : st.state === 'snoozed' ? 'Paused' : st.state === 'counting' ? 'Active' : 'Waiting'}</span><span class="small muted">Every ${cfg.interval} min · ${cfg.duration >= 60 ? fmtDur(cfg.duration * 1000) : cfg.duration + 's'}</span></div>
+        <p class="small">${esc(st.text)}</p>
+        ${st.left != null ? `<div class="progress"><span class="js-eye-widget-bar" style="width:${pct}%"></span></div>` : ''}
+        <p class="small muted">Today: ${done} completed · ${today.filter((e) => e.action === 'skipped').length} skipped · ${today.filter((e) => e.action === 'postponed').length} postponed</p>
+        <div class="row wrap">${cfg.enabled ? `<button class="btn btn-soft btn-sm" data-action="eyeNow">Take one now</button>${st.state === 'snoozed' ? '<button class="btn btn-ghost btn-sm" data-action="eyeUnsnooze">Resume reminders</button>' : '<button class="btn btn-ghost btn-sm" data-action="eyeSnooze" data-id="60">Pause 1 hour</button>'}` : '<button class="btn btn-soft btn-sm" data-action="eyeEnable">Turn on</button>'}</div>` };
+    },
+  };
+
+  function renderHome() {
+    const now = new Date(); const sod = startOfDay(now).getTime();
+    $('#heroDate').textContent = now.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+    { const g = greeting().split(' '); $('#heroGreet').innerHTML = `${esc(g[0])} <span>${esc(g.slice(1).join(' '))}</span>`; }
+    const todays = S.tasks.filter((t) => touchesDay(t, now) && t.status !== 'completed');
+    const next = S.tasks.filter((t) => t.status !== 'completed' && isScheduled(t) && tms(t.start) > Date.now()).sort((a, b) => tms(a.start) - tms(b.start))[0];
+    $('#heroSummary').textContent = todays.length ? `${todays.length} task${todays.length > 1 ? 's' : ''} on today's plan${next && dayKey(next.start) === dayKey(now) ? ` — next up: ${next.title} at ${fmtTime(next.start)}` : ''}.` : 'A clear day. Add a task or start a focus session when you are ready.';
+    const fm = focusMsBetween(sod, sod + DAY); const doneToday = tasksDoneBetween(sod, sod + DAY);
+    $('#summaryRow').innerHTML = [
+      ['Focus today', fmtDur(fm), `/ ${S.settings.goals.dailyFocusMin}m`], ['Sessions', sessionsBetween(sod, sod + DAY), ''], ['Tasks done', doneToday, `/ ${doneToday + todays.length}`], ['Streak', streak(), streak() === 1 ? 'day' : 'days'],
+    ].map(([l, v, s]) => `<div class="summary-tile"><div class="label">${l}</div><div class="value">${v}<small>${s}</small></div></div>`).join('');
+    renderActiveCard();
+    const grid = $('#widgetGrid'); grid.classList.toggle('editing', ui.editingWidgets);
+    $('#customizeBtn').innerHTML = ui.editingWidgets ? `${icon('i-check')}Done` : `${icon('i-sliders')}Customize`;
+    const visible = S.widgets.order.filter((w) => !S.widgets.hidden.includes(w));
+    grid.innerHTML = visible.map((id, i) => {
+      const w = WIDGETS[id]();
+      return `<div class="card widget ${['weekly'].includes(id) ? '' : ''}" data-widget="${id}" ${ui.editingWidgets ? 'draggable="true"' : ''}>
+        ${ui.editingWidgets ? `<div class="widget-edit-bar"><button class="icon-btn sm" data-action="wMove" data-id="${id}" data-dir="-1" aria-label="Move ${ALL_WIDGETS[id]} up" ${i === 0 ? 'disabled' : ''}>${icon('i-up')}</button><button class="icon-btn sm" data-action="wMove" data-id="${id}" data-dir="1" aria-label="Move ${ALL_WIDGETS[id]} down" ${i === visible.length - 1 ? 'disabled' : ''}>${icon('i-down')}</button><button class="icon-btn sm" data-action="wHide" data-id="${id}" aria-label="Remove ${ALL_WIDGETS[id]}">${icon('i-x')}</button></div>` : ''}
+        <div class="widget-head"><h3>${icon(w.icon)}${esc(w.title)}</h3>${w.link && !ui.editingWidgets ? `<button class="widget-link" data-action="${w.link[1]}">${esc(w.link[0])}</button>` : ''}</div>${w.body}</div>`;
+    }).join('') + (ui.editingWidgets ? `<div class="card widget" style="grid-column:1/-1;min-height:0"><div class="widget-head"><h3>${icon('i-grid')}Available widgets</h3></div>
+      ${S.widgets.hidden.length ? `<div class="pill-group">${S.widgets.hidden.map((w) => `<button class="pill" data-action="wShow" data-id="${w}">${icon('i-plus')} ${ALL_WIDGETS[w]}</button>`).join('')}</div>` : '<p class="small muted">All widgets are on your dashboard. Remove one with ✕, reorder with the arrows or by dragging.</p>'}
+      <button class="btn btn-ghost btn-sm" data-action="wReset" style="align-self:flex-start">Reset layout</button></div>` : '')
+      + (!visible.length && !ui.editingWidgets ? `<div class="card" style="grid-column:1/-1">${emptyState('i-grid', 'No widgets', 'Tap Customize to add widgets to your dashboard.')}</div>` : '');
+    renderMusic(); renderLive(false); lastCtrlSig = ''; renderLive(false);
+  }
+  function renderActiveCard() {
+    const t = S.timer; const tk = timerTask(); const el = $('#activeCard'); if (!el) return;
+    const working = S.tasks.filter((x) => x.workingSince && x.workSource === 'manual');
+    if (t.status === 'idle' && !working.length) {
+      el.innerHTML = `<div class="active-inner idle"><div class="meta"><div class="t">No active focus session</div><div class="s muted">${tk ? `Selected task: ${esc(tk.title)}` : 'Pick a task and start a session when you are ready.'}</div></div><button class="btn btn-primary btn-sm" data-action="openFocusSetup">${icon('i-focus')}Focus</button></div>`;
+      return;
+    }
+    if (t.status === 'idle') {
+      const w = working[0];
+      el.innerHTML = `<div class="active-inner"><div class="meta"><div class="t">Working on: ${esc(w.title)}</div><div class="s">Tracking actual time · ${fmtDur(workedMs(w))} so far</div></div><button class="btn btn-sm btn-on-dark" data-action="stopWork" data-id="${w.id}">Stop</button><button class="btn btn-sm btn-on-dark" data-action="openFocusSetup" data-id="${w.id}">Focus</button></div>`;
+      return;
+    }
+    el.innerHTML = `<div class="active-inner ${t.phase !== 'focus' ? 'break' : ''}">
+      <div class="meta"><div class="t">${PHASE_LABEL[t.phase]}${t.status === 'paused' ? ' · paused' : ''}${S.focus.active ? ' · Focus Mode' : ''}</div><div class="s">${tk ? esc(tk.title) : 'No task selected'}${dndActive() ? ' · DND on (simulated)' : ''}</div></div>
+      <div class="big js-active-time">${fmtClock(remaining())}</div>
+      <button class="btn btn-sm btn-on-dark" data-action="${t.status === 'running' ? 'timerPause' : 'timerResume'}" aria-label="${t.status === 'running' ? 'Pause' : 'Resume'}">${icon(t.status === 'running' ? 'i-pause' : 'i-play')}</button>
+      <button class="btn btn-sm btn-on-dark" data-action="openFocus">Open</button></div>`;
+  }
+
+  function renderTasks() {
+    $$('#taskViews button').forEach((b) => b.setAttribute('aria-selected', b.dataset.view === S.ui.taskView));
+    const counts = { overdue: S.tasks.filter((t) => isOverdue(t)).length };
+    const ob = $('#taskViews [data-view=overdue]'); ob.textContent = counts.overdue ? `Overdue (${counts.overdue})` : 'Overdue';
+    const cs = $('#fCategory'); const cur = ui.filters.category;
+    cs.innerHTML = '<option value="">Any</option>' + categories().map((c) => `<option ${c === cur ? 'selected' : ''}>${esc(c)}</option>`).join('');
+    $('#fPriority').value = ui.filters.priority; $('#fStatus').value = ui.filters.status; $('#fSort').value = S.ui.sort;
+    const list = filteredTasks(); const now = Date.now();
+    if (!list.length) {
+      const msgs = { all: ['No tasks yet', 'Create your first task to start planning your day.'], today: ['Nothing for today', 'Tasks scheduled or due today appear here.'], upcoming: ['Nothing upcoming', 'Future scheduled or due tasks appear here.'], overdue: ['Nothing overdue', 'You are on top of things.'], completed: ['No completed tasks', 'Finished tasks will collect here.'] };
+      const [h, p] = ui.search || ui.filters.priority || ui.filters.category || ui.filters.status ? ['No matches', 'Try a different search or clear filters.'] : msgs[S.ui.taskView];
+      $('#taskList').innerHTML = `<div class="card">${emptyState('i-tasks', h, p, S.ui.taskView === 'all' && !ui.search ? '<button class="btn btn-primary btn-sm" data-action="newTask">Create a task</button>' : '')}</div>`;
+      return;
+    }
+    $('#taskList').innerHTML = list.map((t) => {
+      const sub = t.subtasks; const subDone = sub.filter((s) => s.done).length; const od = isOverdue(t, now);
+      const worked = workedMs(t, now);
+      return `<article class="task-card ${t.status}" style="--cat:${catColor(t.category)}">
+        <button class="check ${t.status === 'completed' ? 'on' : ''}" data-action="toggleDone" data-id="${t.id}" aria-label="${t.status === 'completed' ? 'Mark as not completed' : 'Mark as completed'}">${icon('i-check')}</button>
+        <div class="task-body">
+          <div class="task-title">${esc(t.title)}</div>
+          ${t.description ? `<div class="task-desc">${esc(t.description)}</div>` : ''}
+          <div class="task-meta">
+            ${isScheduled(t) ? `<span class="when">${icon('i-clock')}${esc(fmtRange(t.start, t.end))}</span>` : ''}
+            ${t.due ? `<span class="chip ${od ? 'chip-danger' : 'chip-warn'}">${icon('i-flag')}${od ? 'Overdue · ' : 'Due '}${esc(fmtWhen(t.due))}</span>` : od ? '<span class="chip chip-danger">Past scheduled end</span>' : ''}
+            <span class="chip chip-${t.priority}">${t.priority[0].toUpperCase() + t.priority.slice(1)}</span>
+            <span class="chip"><span class="dot" style="background:${catColor(t.category)}"></span>${esc(t.category)}</span>
+            ${t.status === 'inprogress' ? '<span class="chip chip-accent">In progress</span>' : ''}
+            ${sub.length ? `<span class="chip">${subDone}/${sub.length} subtasks</span>` : ''}
+            ${worked || t.estimate ? `<span class="chip" title="Actual time worked vs estimate">${icon('i-clock')}${fmtDur(worked)}${t.estimate ? ` / ${fmtDur(t.estimate * MIN)} est.` : ' worked'}</span>` : ''}
+            ${t.workingSince ? '<span class="chip chip-ok">● Tracking</span>' : ''}
+          </div>
+          ${sub.length && t.status !== 'completed' ? `<div class="subtasks-mini">${sub.map((s) => `<label><input type="checkbox" data-action-change="toggleSub" data-id="${t.id}" data-sid="${s.id}" ${s.done ? 'checked' : ''}><span class="${s.done ? 'done' : ''}">${esc(s.text)}</span></label>`).join('')}</div>` : ''}
+          <div class="task-actions">
+            ${t.status !== 'completed' ? `<button class="btn btn-soft btn-sm" data-action="openFocusSetup" data-id="${t.id}">${icon('i-focus')}Focus</button>
+            ${t.workingSince ? `<button class="btn btn-ghost btn-sm" data-action="stopWork" data-id="${t.id}">${icon('i-pause')}Stop work</button>` : `<button class="btn btn-ghost btn-sm" data-action="startWork" data-id="${t.id}">${icon('i-play')}${isScheduled(t) && tms(t.start) > now ? 'Start early' : isScheduled(t) && tms(t.end) < now ? 'Keep working' : 'Start work'}</button>`}
+            ${isScheduled(t) || t.due ? `<button class="btn btn-ghost btn-sm" data-action="postpone" data-id="${t.id}">Postpone</button>` : ''}` : ''}
+            <button class="btn btn-ghost btn-sm" data-action="editTask" data-id="${t.id}">${icon('i-edit')}Edit</button>
+            <button class="btn btn-danger-ghost btn-sm" data-action="deleteTask" data-id="${t.id}" aria-label="Delete ${esc(t.title)}">${icon('i-trash')}</button>
+          </div>
+        </div></article>`;
+    }).join('');
+  }
+
+  /* --- calendar --- */
+  function calEventsForDay(day) {
+    const a = startOfDay(day).getTime(), b = a + DAY;
+    return S.tasks.filter((t) => isScheduled(t) && tms(t.start) < b && tms(t.end) > a).sort((x, y) => tms(x.start) - tms(y.start));
+  }
+  const calDeadlinesForDay = (day) => { const a = startOfDay(day).getTime(); return S.tasks.filter((t) => t.due && tms(t.due) >= a && tms(t.due) < a + DAY); };
+  function renderCalendar() {
+    const v = S.ui.calView; const cur = ui.calCursor;
+    $$('#calViews button').forEach((b) => b.setAttribute('aria-selected', b.dataset.cview === v));
+    const cats = Array.from(new Set(S.tasks.map((t) => t.category)));
+    $('#calLegend').innerHTML = cats.map((c) => `<span><i style="background:${catColor(c)}"></i>${esc(c)}</span>`).join('') +
+      `<span><i style="background:transparent;border-left:4px solid ${PRI_COLOR.high}"></i>High</span><span><i style="background:transparent;border-left:4px solid ${PRI_COLOR.medium}"></i>Medium</span><span><i style="background:transparent;border-left:4px solid ${PRI_COLOR.low}"></i>Low priority</span><span><i style="border:1.5px dashed var(--danger)"></i>Deadline</span>`;
+    if (v === 'month') {
+      $('#calTitle').textContent = cur.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+      const first = new Date(cur.getFullYear(), cur.getMonth(), 1); const start = weekStartOf(first);
+      let html = '<div class="month-grid">' + Array.from({ length: 7 }, (_, i) => `<div class="month-dow">${addDays(start, i).toLocaleDateString(undefined, { weekday: 'short' })}</div>`).join('');
+      for (let i = 0; i < 42; i++) {
+        const d = addDays(start, i); const k = dayKey(d); const evs = calEventsForDay(d); const dls = calDeadlinesForDay(d);
+        const items = evs.map((t) => `<span class="ev ${t.status === 'completed' ? 'done' : ''}" style="background:${catColor(t.category)}" title="${esc(t.title)}"></span>`)
+          .concat(dls.map((t) => `<span class="ev deadline" title="Due: ${esc(t.title)}"></span>`));
+        html += `<button class="month-cell ${d.getMonth() !== cur.getMonth() ? 'other' : ''} ${k === dayKey(new Date()) ? 'today' : ''} ${k === ui.calSelected ? 'selected' : ''}" data-action="calSelect" data-id="${k}" aria-label="${fmtDay(d, { weekday: 'long', month: 'long', day: 'numeric' })}: ${evs.length} scheduled, ${dls.length} deadlines">
+          <span class="d">${d.getDate()}</span><span class="evs">${items.slice(0, 4).join('')}</span>${items.length > 4 ? `<span class="more">+${items.length - 4}</span>` : ''}</button>`;
+      }
+      $('#calBody').innerHTML = html + '</div>';
+    } else {
+      const days = v === 'week' ? Array.from({ length: 7 }, (_, i) => addDays(weekStartOf(cur), i)) : [startOfDay(cur)];
+      $('#calTitle').textContent = v === 'week' ? `${fmtDay(days[0], { month: 'short', day: 'numeric' })} – ${fmtDay(days[6], { month: 'short', day: 'numeric', year: 'numeric' })}` : fmtDay(cur, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+      const cols = `40px repeat(${days.length}, minmax(${v === 'week' ? 44 : 0}px, 1fr))`;
+      const HH = 48; const nowD = new Date();
+      let head = `<div class="timegrid-head" style="grid-template-columns:${cols}"><div></div>${days.map((d) => `<button class="tg-dayhead ${dayKey(d) === dayKey(nowD) ? 'today' : ''}" data-action="calDayView" data-id="${dayKey(d)}">${d.toLocaleDateString(undefined, { weekday: 'short' })}<b>${d.getDate()}</b></button>`).join('')}
+        <div class="tg-deadlines" style="grid-template-columns:${cols}"><div class="tiny muted" style="border:0;justify-content:center;align-items:flex-end;padding-right:6px">due</div>${days.map((d) => `<div>${calDeadlinesForDay(d).map((t) => `<button class="tg-dl" data-action="editTask" data-id="${t.id}">⚑ ${esc(fmtTime(t.due))} ${esc(t.title)}</button>`).join('')}</div>`).join('')}</div></div>`;
+      let body = `<div class="tg-scroll" id="tgScroll"><div class="tg-body" style="grid-template-columns:${cols}"><div class="tg-hours">${Array.from({ length: 24 }, (_, h) => `<div class="tg-hour">${h ? fmtTime(new Date(2000, 0, 1, h)).replace(':00', '') : ''}</div>`).join('')}</div>`;
+      days.forEach((d) => {
+        const a = d.getTime(); const evs = calEventsForDay(d).map((t) => ({ t, s: Math.max(tms(t.start), a), e: Math.min(tms(t.end), a + DAY) }));
+        // overlap layout: clusters + greedy columns
+        const placed = []; let cluster = []; let clusterEnd = -1;
+        const flushCluster = () => { const colsN = Math.max(1, ...cluster.map((x) => x.col + 1)); cluster.forEach((x) => (x.cols = colsN)); placed.push(...cluster); cluster = []; };
+        evs.forEach((ev) => {
+          if (ev.s >= clusterEnd && cluster.length) flushCluster();
+          const used = new Set(cluster.filter((x) => x.e > ev.s).map((x) => x.col)); let c = 0; while (used.has(c)) c++;
+          ev.col = c; cluster.push(ev); clusterEnd = Math.max(clusterEnd, ev.e);
+        });
+        if (cluster.length) flushCluster();
+        const isToday = dayKey(d) === dayKey(nowD);
+        body += `<div class="tg-col ${isToday ? 'today' : ''}" data-day="${dayKey(d)}" style="height:${24 * HH}px">
+          ${placed.map((x) => { const top = ((x.s - a) / HOUR) * HH; const h = Math.max(20, ((x.e - x.s) / HOUR) * HH - 2); const w = 100 / x.cols;
+            return `<button class="tg-ev ${x.t.status === 'completed' ? 'done' : ''} ${x.cols > 1 ? 'overlap' : ''}" data-action="editTask" data-id="${x.t.id}" style="top:${top}px;height:${h}px;left:calc(${x.col * w}% + 2px);width:calc(${w}% - 4px);background:${catColor(x.t.category)};border-left:4px solid ${PRI_COLOR[x.t.priority]}" title="${esc(x.t.title)} · ${esc(fmtRange(x.t.start, x.t.end))}${x.cols > 1 ? ' · overlaps another task' : ''}"><b>${esc(x.t.title)}</b>${h > 30 ? `${esc(fmtTime(x.t.start))} – ${esc(fmtTime(x.t.end))}` : ''}</button>`; }).join('')}
+          ${isToday ? `<div class="tg-now" style="top:${((Date.now() - a) / HOUR) * HH}px"></div>` : ''}</div>`;
+      });
+      body += '</div></div>';
+      $('#calBody').innerHTML = `<div class="timegrid">${head}${body}</div>`;
+      const sc = $('#tgScroll'); if (sc) sc.scrollTop = (ui.calScrollTop != null ? ui.calScrollTop : 7 * HH);
+      sc.addEventListener('scroll', () => (ui.calScrollTop = sc.scrollTop));
+    }
+    // agenda for selected date
+    const sel = new Date(ui.calSelected + 'T00:00'); const evs = calEventsForDay(sel); const dls = calDeadlinesForDay(sel).filter((t) => !evs.includes(t));
+    const ov = new Set(); evs.forEach((x) => evs.forEach((y) => { if (x !== y && x.status !== 'completed' && y.status !== 'completed' && tms(x.start) < tms(y.end) && tms(y.start) < tms(x.end)) { ov.add(x.id); ov.add(y.id); } }));
+    $('#calAgenda').innerHTML = `<div class="card"><h3><span>${esc(fmtDay(sel, { weekday: 'long', month: 'long', day: 'numeric' }))}</span><button class="btn btn-soft btn-sm" data-action="calAdd" data-id="${ui.calSelected}">${icon('i-plus')}Add</button></h3>
+      ${evs.length || dls.length ? `<div class="mini-list">${evs.map((t) => taskMiniHTML(t) + (ov.has(t.id) ? `<p class="tiny" style="color:var(--danger);margin:-4px 0 4px 20px">Overlaps another scheduled task</p>` : '')).join('')}${dls.map((t) => taskMiniHTML(t, 'due')).join('')}</div>` : emptyState('i-cal', 'Nothing on this day', 'Tap Add, or click an empty time slot in Week/Day view.')}</div>`;
+  }
+  // click empty slot in time grid → create task
+  document.addEventListener('click', (e) => {
+    const col = e.target.closest('.tg-col'); if (!col || e.target.closest('.tg-ev')) return;
+    const rect = col.getBoundingClientRect(); const y = e.clientY - rect.top; const mins = Math.floor((y / 48) * 2) * 30;
+    const d = new Date(col.dataset.day + 'T00:00'); d.setMinutes(clamp(mins, 0, 23 * 60 + 30));
+    ui.calSelected = col.dataset.day;
+    openTaskForm(null, { start: toLocalInput(d), end: toLocalInput(d.getTime() + HOUR), estimate: 60 });
+  });
+
+  /* --- focus screen --- */
+  function renderFocus() {
+    const t = S.timer; const tk = timerTask(); const fm = S.focus.active; const isBreak = t.phase !== 'focus';
+    const restr = restrictionsActive(); const dnd = dndActive();
+    $('#focusMain').innerHTML = `
+      <div class="focus-status">
+        <span class="chip ${fm ? 'chip-accent' : ''}">${fm ? '● Focus Mode on' : 'Focus Mode off'}</span>
+        <span class="chip ${isBreak ? 'chip-warn' : ''}">${PHASE_LABEL[t.phase]}${t.status === 'paused' ? ' · paused' : t.status === 'idle' ? ' · ready' : ''}</span>
+        <span class="chip ${dnd ? 'chip-accent' : ''}">${icon('i-moon')}DND ${dnd ? 'on' : 'off'} <span class="muted">(simulated)</span></span>
+      </div>
+      <div class="focus-task"><div class="k">Current task</div><div class="v">${tk ? esc(tk.title) : 'No task selected'}</div>${tk && (tk.focusMs || tk.actualMs) ? `<div class="small muted">${fmtDur(tk.focusMs)} focused on this task${tk.estimate ? ` · est. ${fmtDur(tk.estimate * MIN)}` : ''}</div>` : ''}</div>
+      <div class="row" style="justify-content:center">${ringHTML(Math.min(260, Math.min(window.innerWidth, 480) - 90), 14)}</div>
+      <div class="session-dots js-t-dots" aria-label="Sessions in this cycle"></div>
+      <p class="small muted" style="text-align:center">Session ${(t.cycle % S.settings.pomodoro.interval) + (t.phase === 'focus' ? 1 : 0) || S.settings.pomodoro.interval} of ${S.settings.pomodoro.interval} · long break after every ${S.settings.pomodoro.interval} · ${sessionsBetween(startOfDay(new Date()).getTime(), Date.now() + 1)} completed today</p>
+      <div class="timer-controls js-t-ctrl"></div>
+      ${isBreak && t.status !== 'idle' ? `<div class="break-suggest">${icon('i-moon')}<div><b>Break time — rest away from the screen</b>${esc(randomSuggestion())}${fm ? '<br><span class="small">DND is off and every app is accessible during the break (simulated).</span>' : ''}</div></div>` : ''}
+      ${fm && isBreak ? `<div class="set-row" style="padding:0;border:0"><div class="lbl"><b>Resume Focus Mode after the break?</b><span>We will ask when the break ends; your previous settings are kept.</span></div><div class="ctl">${sw('data-action-change="resumeAfterBreak"', S.focus.resumeAfterBreak)}</div></div>` : ''}
+      <div class="row wrap" style="justify-content:center">
+        ${fm ? `<button class="btn btn-ghost" data-action="openFocusSetup">${icon('i-sliders')}Modify focus settings</button><button class="btn btn-danger-ghost" data-action="endFocus">End focus session</button>`
+          : `<button class="btn btn-primary btn-lg" data-action="openFocusSetup">${icon('i-focus')}Set up Focus Mode</button>`}
+      </div>
+      ${!fm ? '<p class="small muted" style="text-align:center">Focus Mode adds a task, music, simulated Do Not Disturb and app access rules on top of the Pomodoro timer. You can also just press Start to run a plain Pomodoro.</p>' : ''}`;
+    // simulated device
+    const allowed = APPS.filter((a) => S.focus.apps[a.id]).length;
+    $('#focusDevice').innerHTML = `
+      <div class="widget-head" style="margin-bottom:10px"><h3>${icon('i-apps')}App access ${restr ? '— restricted' : '— all accessible'}</h3><button class="widget-link" data-action="toggleEditApps">${ui.editApps ? 'Done' : 'Edit'}</button></div>
+      ${ui.editApps ? `<div class="app-toggle-list" style="margin-bottom:12px">${APPS.map((a) => `<label class="app-toggle"><input type="checkbox" data-action-change="appToggle" data-id="${a.id}" ${S.focus.apps[a.id] ? 'checked' : ''}>${icon(a.icon)}${a.name}</label>`).join('')}</div><p class="small muted" style="margin-bottom:12px">Checked apps stay accessible during focus. Changes apply immediately, even mid-session.</p>` : ''}
+      <div class="device" aria-label="Simulated phone">
+        <div class="device-status"><span class="num">${fmtTime(new Date())}</span><span class="ind">${dnd ? `<span class="dnd-pill">${icon('i-moon')}DND</span>` : '<span class="dnd-pill off">DND off</span>'}${restr ? `<span class="dnd-pill off">${icon('i-lock')}${allowed}/${APPS.length}</span>` : ''}</span></div>
+        <div class="app-grid">${APPS.map((a) => { const ok = appAccessible(a.id); return `<button class="sim-app ${ok ? '' : 'locked'}" data-action="simApp" data-id="${a.id}" aria-label="${a.name}: ${ok ? 'accessible' : 'restricted'}"><span class="ico" style="background:${a.color}">${icon(a.icon)}</span>${ok ? '' : `<span class="lock">${icon('i-lock')}</span>`}${a.name}</button>`; }).join('')}</div>
+        <div class="device-foot">${restr ? `${APPS.length - allowed} apps restricted until your break` : fm ? 'Break or idle: every app is accessible' : 'Focus Mode is off'}</div>
+      </div>
+      <div class="sim-note" style="margin-top:12px">${icon('i-lock')}<div><b>Simulation only.</b> Browsers cannot control your phone's Do Not Disturb or block other installed apps. A native build could use Android's Notification Policy Access, or iOS FamilyControls / ManagedSettings / DeviceActivity, with user permission.</div></div>`;
+    $('#focusMusicCard').innerHTML = `<div class="widget-head" style="margin-bottom:10px"><h3>${icon('i-music')}Focus music</h3></div><div class="js-music"></div>`;
+    renderMusic(); lastCtrlSig = ''; renderLive(false);
+  }
+
+  /* --- insights --- */
+  function renderInsights() {
+    $$('#statRange button').forEach((b) => b.setAttribute('aria-selected', b.dataset.range === ui.statRange));
+    const [a, b] = rangeBounds(ui.statRange); const now = Date.now();
+    const fs = focusSessions().filter((s) => s.end >= a && s.end < b);
+    const completed = fs.filter((s) => s.completed);
+    const focusMs = fs.reduce((x, s) => x + s.ms, 0);
+    const doneTasks = tasksDoneBetween(a, b);
+    const pending = S.tasks.filter((t) => t.status !== 'completed').length; const overdue = S.tasks.filter((t) => isOverdue(t, now)).length;
+    const totalTasks = S.tasks.length; const rate = totalTasks ? Math.round((S.tasks.filter((t) => t.status === 'completed').length / totalTasks) * 100) : 0;
+    const eyeDone = S.eyeLog.filter((e) => e.action === 'completed' && e.ts >= a && e.ts < b).length;
+    const avgSession = fs.length ? focusMs / fs.length : 0;
+    const daysElapsed = Math.max(1, Math.ceil((Math.min(b, startOfDay(now).getTime() + DAY) - a) / DAY));
+    $('#statGrid').innerHTML = [
+      ['Focus time', fmtDur(focusMs)], ['Pomodoros completed', completed.length], ['Tasks completed', doneTasks], ['Pending tasks', pending],
+      ['Overdue tasks', overdue], ['Avg. session', fs.length ? fmtDur(avgSession) : '—'], ['Focus streak', `${streak()} d`], ['Screen breaks', eyeDone],
+      ['Completion rate', totalTasks ? rate + '%' : '—'], ['Avg. daily focus', fmtDur(focusMs / daysElapsed)], ['Best streak', `${bestStreak()} d`], ['Total sessions (all)', focusSessions().filter((s) => s.completed).length],
+    ].map(([l, v]) => `<div class="stat"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('');
+    // insights from real activity
+    const allFs = focusSessions();
+    const byDow = Array(7).fill(0); const byPart = { Morning: 0, Afternoon: 0, Evening: 0, Night: 0 };
+    allFs.forEach((s) => { const d = new Date(s.start); byDow[d.getDay()] += s.ms; const h = d.getHours(); byPart[h >= 5 && h < 12 ? 'Morning' : h < 17 && h >= 12 ? 'Afternoon' : h >= 17 && h < 22 ? 'Evening' : 'Night'] += s.ms; });
+    const bestDow = byDow.indexOf(Math.max(...byDow)); const bestPart = Object.entries(byPart).sort((x, y) => y[1] - x[1])[0];
+    const [ws, we] = rangeBounds('week');
+    const has = allFs.length > 0;
+    const ins = [
+      ['i-cal', 'Most productive day', has ? new Date(2024, 0, 7 + bestDow).toLocaleDateString(undefined, { weekday: 'long' }) + ` · ${fmtDur(byDow[bestDow])}` : 'Not enough activity yet'],
+      ['i-clock', 'Most productive time', has ? `${bestPart[0]} · ${fmtDur(bestPart[1])}` : 'Not enough activity yet'],
+      ['i-focus', 'Focus this week', fmtDur(focusMsBetween(ws, we))],
+      ['i-check', 'Tasks completed', `${S.tasks.filter((t) => t.status === 'completed').length} all time · ${tasksDoneBetween(ws, we)} this week`],
+      ['i-stats', 'Average daily focus', has ? `${fmtDur(focusMs / daysElapsed)} (${{ day: 'today', week: 'this week', month: 'this month', all: 'all time' }[ui.statRange]})` : 'Not enough activity yet'],
+      ['i-eye', 'Screen breaks', `${S.eyeLog.filter((e) => e.action === 'completed').length} taken · ${S.eyeLog.filter((e) => e.action === 'skipped').length} skipped`],
+    ];
+    $('#insightList').innerHTML = `<div class="widget-head" style="margin-bottom:10px"><h3>${icon('i-stats')}Insights</h3><span class="tiny muted">Based only on your recorded activity</span></div><div class="insight-list">${ins.map(([ic, k, v]) => `<div class="insight"><div class="ic">${icon(ic)}</div><div><div class="k">${k}</div><div class="v">${esc(v)}</div></div></div>`).join('')}</div>`;
+    renderCharts();
+    // goals
+    const sod = startOfDay(new Date()).getTime(); const g = S.settings.goals;
+    const dayMs = focusMsBetween(sod, sod + DAY); const weekMs = focusMsBetween(ws, we); const weekTasks = tasksDoneBetween(ws, we);
+    const goalRow = (label, cur, target, txt) => `<div style="margin-top:12px"><div class="row between small"><span>${label}</span><b>${txt}</b></div><div class="progress" style="margin-top:6px"><span style="width:${clamp((cur / target) * 100, 0, 100)}%"></span></div></div>`;
+    $('#goalsCard').innerHTML = `<div class="widget-head"><h3>${icon('i-trophy')}Goals</h3><button class="widget-link" data-action="goGoalSettings">Edit goals</button></div>
+      ${goalRow('Daily focus goal', dayMs, g.dailyFocusMin * MIN, `${fmtDur(dayMs)} / ${fmtDur(g.dailyFocusMin * MIN)}`)}
+      ${goalRow('Weekly focus goal', weekMs, g.weeklyFocusHours * HOUR, `${fmtDur(weekMs)} / ${g.weeklyFocusHours}h`)}
+      ${goalRow('Weekly tasks goal', weekTasks, g.weeklyTasks, `${weekTasks} / ${g.weeklyTasks}`)}`;
+    const got = ACH.filter((x) => S.ach[x.id]).length;
+    $('#achievementsCard').innerHTML = `<div class="widget-head"><h3>${icon('i-trophy')}Milestones</h3><span class="small muted">${got} of ${ACH.length}</span></div>
+      <div class="ach-grid">${ACH.map((x) => `<div class="ach ${S.ach[x.id] ? 'got' : ''}"><div class="ic">${icon(x.icon)}</div><div class="n">${esc(x.name)}</div><div class="d">${S.ach[x.id] ? 'Earned ' + esc(fmtDay(S.ach[x.id], { month: 'short', day: 'numeric' })) : esc(x.desc)}</div></div>`).join('')}</div>`;
+    const log = S.eyeLog.slice(-12).reverse();
+    $('#screenBreakHistoryCard').innerHTML = `<div class="widget-head"><h3>${icon('i-eye')}Screen break history</h3><span class="small muted">${S.eyeLog.length} total records</span></div>
+      <div class="row wrap small" style="margin-top:8px;gap:14px"><span>Completed: <b>${S.eyeLog.filter((e) => e.action === 'completed').length}</b></span><span>Skipped: <b>${S.eyeLog.filter((e) => e.action === 'skipped').length}</b></span><span>Postponed: <b>${S.eyeLog.filter((e) => e.action === 'postponed').length}</b></span><span>Rest time: <b>${fmtDur(S.eyeLog.filter((e) => e.action === 'completed').reduce((x, e) => x + (e.ms || 0), 0))}</b></span></div>
+      ${log.length ? `<table class="hist-table"><thead><tr><th>When</th><th>Result</th><th>Duration</th></tr></thead><tbody>${log.map((e) => `<tr><td>${esc(fmtWhen(e.ts))}</td><td><span class="chip ${e.action === 'completed' ? 'chip-ok' : e.action === 'skipped' ? 'chip-danger' : 'chip-warn'}">${e.action}</span></td><td>${e.action === 'completed' ? Math.round((e.ms || 0) / 1000) + 's' : e.action === 'postponed' ? `+${e.minutes || S.settings.screenBreak.postponeMin} min` : '—'}</td></tr>`).join('')}</tbody></table>` : emptyState('i-eye', 'No screen breaks yet', 'Your completed, skipped and postponed breaks will be listed here.')}`;
+  }
+  function renderCharts() {
+    if (!window.Chart) { $$('.chart-wrap').forEach((w) => (w.innerHTML = '<div class="chart-empty">Charts could not load (Chart.js missing).</div>')); return; }
+    const css = getComputedStyle(document.documentElement); const cv = (n) => css.getPropertyValue(n).trim();
+    Chart.defaults.font.family = getComputedStyle(document.body).fontFamily; Chart.defaults.color = cv('--muted'); Chart.defaults.borderColor = cv('--line-2');
+    Object.values(ui.charts).forEach((c) => c.destroy()); ui.charts = {};
+    const accent = cv('--ring-focus'), accent2 = '#d397fa', warm = cv('--p-med'), pendingC = cv('--line'), dangerC = cv('--p-high'), surfaceC = cv('--surface');
+    const days14 = Array.from({ length: 14 }, (_, i) => addDays(startOfDay(new Date()), i - 13));
+    const has = focusSessions().length > 0;
+    const mk = (id, cfg, empty, msg) => {
+      const cv = document.getElementById(id); const wrap = cv.parentElement; const ex = wrap.querySelector('.chart-empty'); if (ex) ex.remove();
+      cfg.options = Object.assign({ responsive: true, maintainAspectRatio: false, animation: { duration: 300 }, plugins: { legend: { display: cfg.type === 'doughnut' || (cfg.data.datasets.length > 1), position: 'bottom', labels: { boxWidth: 10, boxHeight: 10, usePointStyle: true } } } }, cfg.options || {});
+      ui.charts[id] = new Chart(cv, cfg);
+      if (empty) wrap.insertAdjacentHTML('beforeend', `<div class="chart-empty">${msg}</div>`);
+    };
+    const yMin = { scales: { y: { beginAtZero: true, ticks: { precision: 0 } }, x: { grid: { display: false } } } };
+    mk('chDaily', { type: 'bar', data: { labels: days14.map((d) => d.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' })), datasets: [{ label: 'Focus minutes', data: days14.map((d) => Math.round(focusMsBetween(d.getTime(), d.getTime() + DAY) / MIN)), backgroundColor: accent, borderRadius: 6, maxBarThickness: 28 }] }, options: yMin }, !has, 'No focus sessions recorded yet. Complete a Pomodoro to see your daily focus time.');
+    const weeks = Array.from({ length: 8 }, (_, i) => addDays(weekStartOf(new Date()), (i - 7) * 7));
+    const anyTasks = S.tasks.some((t) => t.status === 'completed');
+    mk('chWeekly', { type: 'bar', data: { labels: weeks.map((w) => w.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })), datasets: [
+      { label: 'Focus hours', data: weeks.map((w) => +(focusMsBetween(w.getTime(), w.getTime() + 7 * DAY) / HOUR).toFixed(2)), backgroundColor: accent, borderRadius: 6, yAxisID: 'y', maxBarThickness: 26 },
+      { label: 'Tasks completed', data: weeks.map((w) => tasksDoneBetween(w.getTime(), w.getTime() + 7 * DAY)), type: 'line', borderColor: warm, backgroundColor: warm, tension: 0.3, yAxisID: 'y1', pointRadius: 3 },
+    ] }, options: { scales: { y: { beginAtZero: true, title: { display: true, text: 'hours' } }, y1: { beginAtZero: true, position: 'right', grid: { display: false }, ticks: { precision: 0 }, title: { display: true, text: 'tasks' } }, x: { grid: { display: false } } } } }, !has && !anyTasks, 'Weekly totals will appear once you focus or complete tasks.');
+    const done = S.tasks.filter((t) => t.status === 'completed').length, od = S.tasks.filter((t) => isOverdue(t)).length, inp = S.tasks.filter((t) => t.status === 'inprogress' && !isOverdue(t)).length, pend = S.tasks.length - done - od - inp;
+    mk('chTasks', { type: 'doughnut', data: { labels: ['Completed', 'In progress', 'Pending', 'Overdue'], datasets: [{ data: [done, inp, pend, od], backgroundColor: [accent, accent2, pendingC, dangerC], borderWidth: 2, borderColor: surfaceC }] }, options: { cutout: '62%' } }, !S.tasks.length, 'No tasks yet. Create tasks to see how they are progressing.');
+    const last = focusSessions().slice(-20);
+    mk('chSessions', { type: 'bar', data: { labels: last.map((s) => `${fmtDay(s.end, { month: 'numeric', day: 'numeric' })} ${fmtTime(s.end)}`), datasets: [{ label: 'Minutes', data: last.map((s) => +(s.ms / MIN).toFixed(1)), backgroundColor: last.map((s) => (s.completed ? accent : accent2)), borderRadius: 5, maxBarThickness: 22 }] }, options: Object.assign({}, yMin, { plugins: { legend: { display: false }, tooltip: { callbacks: { afterLabel: (c) => (last[c.dataIndex].completed ? 'completed' : 'ended early') } } }, scales: { y: { beginAtZero: true }, x: { grid: { display: false }, ticks: { display: last.length < 12 } } } }) }, !last.length, 'Each focus session you run will appear here (lighter bars ended early).');
+    const d30 = Array.from({ length: 30 }, (_, i) => addDays(startOfDay(new Date()), i - 29));
+    const vals = d30.map((d) => Math.round(focusMsBetween(d.getTime(), d.getTime() + DAY) / MIN));
+    const avg = vals.map((_, i) => { const w = vals.slice(Math.max(0, i - 6), i + 1); return +(w.reduce((a, b) => a + b, 0) / w.length).toFixed(1); });
+    mk('chTrend', { type: 'line', data: { labels: d30.map((d) => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })), datasets: [
+      { label: 'Focus minutes', data: vals, borderColor: accent2, backgroundColor: 'rgba(211,151,250,.22)', fill: true, tension: 0.3, pointRadius: 2 },
+      { label: '7-day average', data: avg, borderColor: accent, borderWidth: 2.5, tension: 0.35, pointRadius: 0 },
+    ] }, options: { scales: { y: { beginAtZero: true }, x: { grid: { display: false }, ticks: { maxTicksLimit: 8 } } } } }, !has, 'Your 30-day trend builds up as you record focus sessions.');
+  }
+
+  /* --- settings --- */
+  function getPath(p) { return p.split('.').reduce((o, k) => (o ? o[k] : undefined), S.settings); }
+  function setPath(p, v) { const ks = p.split('.'); const last = ks.pop(); const o = ks.reduce((x, k) => x[k], S.settings); o[last] = v; }
+  const row = (title, desc, ctl, cls = '') => `<div class="set-row ${cls}"><div class="lbl"><b>${title}</b>${desc ? `<span>${desc}</span>` : ''}</div><div class="ctl">${ctl}</div></div>`;
+  const tog = (path) => sw(`data-setting="${path}"`, getPath(path));
+  const num = (path, min, max, step = 1) => `<div class="stepper"><button type="button" data-step="${path}" data-d="-${step}" aria-label="Decrease">−</button><input type="number" inputmode="numeric" data-setting="${path}" data-num min="${min}" max="${max}" step="${step}" value="${getPath(path)}" aria-label="${path.split('.').pop()}"><button type="button" data-step="${path}" data-d="${step}" aria-label="Increase">+</button></div>`;
+  const sel = (path, opts, isNumVal) => `<select class="select" data-setting="${path}" ${isNumVal ? 'data-num' : ''}>${opts.map(([v, l]) => `<option value="${v}" ${String(getPath(path)) === String(v) ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+  const SETTINGS_SECTIONS = [
+    { group: 'Personalize', id: 'appearance', title: 'Appearance', icon: 'i-moon', color: '#8364e8', sum: () => ({ system: 'Match device', light: 'Light', dark: 'Dark' }[S.settings.general.theme]) },
+    { group: 'Personalize', id: 'general', title: 'General', icon: 'i-settings', color: '#6B6383', sum: () => `${S.settings.general.timeFormat}-hour · week starts ${['Sunday', 'Monday', '', '', '', '', 'Saturday'][S.settings.general.weekStart]} · sounds ${S.settings.general.sounds ? 'on' : 'off'}` },
+    { group: 'Focus', id: 'pomodoro', title: 'Pomodoro timer', icon: 'i-clock', color: '#6A4BD8', sum: () => { const p = S.settings.pomodoro; return `${p.focus} / ${p.short} / ${p.long} min · long break every ${p.interval}`; } },
+    { group: 'Focus', id: 'focus', title: 'Focus Mode', icon: 'i-lock', color: '#9B6BE8', sum: () => `DND ${S.settings.focusMode.dnd ? 'on' : 'off'} · ${APPS.filter((a) => S.settings.focusMode.apps[a.id]).length} apps allowed` },
+    { group: 'Focus', id: 'screen', title: 'Screen breaks', icon: 'i-eye', color: '#B06CE6', sum: () => S.settings.screenBreak.enabled ? `Every ${S.settings.screenBreak.interval} min · ${S.settings.screenBreak.duration >= 60 ? fmtDur(S.settings.screenBreak.duration * 1000) : S.settings.screenBreak.duration + ' s'}` : 'Off' },
+    { group: 'Focus', id: 'breaks', title: 'Break suggestions', icon: 'i-quote', color: '#C784F2', sum: () => `${S.settings.breakSuggestions.length} ideas` },
+    { group: 'Focus', id: 'music', title: 'Music', icon: 'i-music', color: '#d397fa', sum: () => { const c = CadenceAudio.library.find((x) => x.id === S.settings.music.category); return `${c ? c.name : ''} · ${Math.round(S.settings.music.volume * 100)}%`; } },
+    { group: 'Alerts & goals', id: 'notifications', title: 'Notifications', icon: 'i-bell', color: '#D6455D', sum: () => `${Object.values(S.settings.notifications.categories).filter(Boolean).length} of ${Object.keys(NOTIF_CATS).length} types on · system ${notifPerm() === 'granted' ? 'allowed' : notifPerm() === 'unsupported' ? 'unavailable' : 'off'}` },
+    { group: 'Alerts & goals', id: 'goals', title: 'Goals', icon: 'i-trophy', color: '#D18F1F', sum: () => `${S.settings.goals.dailyFocusMin} min a day · ${S.settings.goals.weeklyFocusHours} h a week` },
+    { group: 'Data', id: 'data', title: 'Data & storage', icon: 'i-grid', color: '#3FA07A', sum: () => `${S.tasks.length} tasks · ${S.sessions.length} sessions` },
+    { group: 'Data', id: 'about', title: 'About Cadence', icon: 'i-focus', color: '#5E3FD0', sum: () => 'Install, limitations, privacy' },
+  ];
+  const sectionById = (id) => SETTINGS_SECTIONS.find((x) => x.id === id);
+  function openSettingsSection(id) {
+    if (ui.screen !== 'settings') go('settings');
+    ui.settingsSection = id; pushNav(); applyChrome(); renderSettings(true); window.scrollTo(0, 0);
+  }
+  function renderSettings(animate) {
+    const root = $('#settingsRoot');
+    const scr = root.parentElement; scr.classList.remove('push'); if (animate) { void scr.offsetWidth; scr.classList.add('push'); }
+    if (!ui.settingsSection) {
+      const groups = [];
+      SETTINGS_SECTIONS.forEach((s) => { let g = groups.find((x) => x.name === s.group); if (!g) groups.push((g = { name: s.group, items: [] })); g.items.push(s); });
+      root.innerHTML = `
+        <div class="set-profile"><span class="brand-mark"></span><div><b>Cadence</b><span>Everything is stored on this device only.</span></div></div>
+        ${installRowHTML()}
+        ${groups.map((g) => `<div class="set-group-label">${esc(g.name)}</div><div class="set-group">${g.items.map((s) => `
+          <button class="set-nav" data-action="openSection" data-id="${s.id}">
+            <span class="ic" style="background:${s.color}">${icon(s.icon)}</span>
+            <span class="lbl"><b>${esc(s.title)}</b><span>${esc(s.sum())}</span></span>${icon('i-right', 'chev')}
+          </button>`).join('')}</div>`).join('')}`;
+      return;
+    }
+    root.innerHTML = sectionHTML(ui.settingsSection);
+  }
+  function installRowHTML() {
+    if (isStandalone()) return '';
+    const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    if (!deferredInstall && !ios) return '';
+    return `<div class="card install-card"><span class="brand-mark"></span><div class="meta"><b>Install Cadence</b><span class="small muted">${deferredInstall ? 'Add it to your home screen and open it like an app.' : 'In Safari, tap Share, then “Add to Home Screen”.'}</span></div>${deferredInstall ? '<button class="btn btn-primary btn-sm" data-action="installApp">Install</button>' : ''}</div>`;
+  }
+  function sectionHTML(id) {
+    const s = S.settings; const sb = s.screenBreak; const p = notifPerm(); const st = eyeStatus();
+    switch (id) {
+      case 'appearance': return `
+        <div class="set-group"><h3>Theme</h3>
+          <div class="theme-picker">${[['system', 'Device'], ['light', 'Light'], ['dark', 'Dark']].map(([v, l]) => `
+            <button class="theme-opt" data-action="setTheme" data-id="${v}" aria-pressed="${s.general.theme === v}"><span class="theme-prev tp-${v}"><i class="a"></i><i></i><span class="ring-mini"></span><i></i></span>${l}</button>`).join('')}</div>
+          <div class="set-row"><div class="lbl"><span>“Device” follows your phone’s light or dark setting automatically.</span></div></div>
+        </div>`;
+      case 'general': return `
+        <div class="set-group">
+          ${row('Time format', '', sel('general.timeFormat', [['12', '12-hour'], ['24', '24-hour']]))}
+          ${row('First day of the week', 'Calendar, weekly stats and streaks', sel('general.weekStart', [[0, 'Sunday'], [1, 'Monday'], [6, 'Saturday']], true))}
+        </div>
+        <div class="set-group"><h3>Sound & haptics</h3>
+          ${row('Sounds', 'Master switch for all Cadence sounds', tog('general.sounds'))}
+          ${row('Timer end sound', 'Chime when sessions and breaks end', tog('general.timerSound'))}
+          ${row('Chime volume', '', `<input type="range" class="range" style="width:120px" min="0" max="1" step="0.05" data-setting="general.chimeVolume" data-num value="${s.general.chimeVolume}" aria-label="Chime volume"><button class="btn btn-ghost btn-sm" data-action="testChime">Test</button>`)}
+          ${row('Vibration', 'On phones that support it', tog('general.vibrate'))}
+        </div>`;
+      case 'pomodoro': return `
+        <div class="set-group"><h3>Durations</h3>
+          ${row('Focus session', 'Default 25 min', num('pomodoro.focus', 1, 180, 1))}
+          ${row('Short break', 'Default 5 min', num('pomodoro.short', 1, 60, 1))}
+          ${row('Long break', 'Default 15 min', num('pomodoro.long', 1, 90, 1))}
+          ${row('Long break after', 'Focus sessions per cycle', num('pomodoro.interval', 2, 10, 1))}
+        </div>
+        <div class="set-group"><h3>Behaviour</h3>
+          ${row('Automatic transitions', 'Start breaks automatically. When off, Cadence asks first. You are always asked before the next focus session.', tog('pomodoro.autoTransition'))}
+        </div>`;
+      case 'focus': return `
+        <div class="set-group">
+          ${row('Default focus duration', 'Minutes', num('focusMode.defaultDuration', 1, 240, 5))}
+          ${row('Do Not Disturb (simulated)', 'Holds non-essential Cadence alerts during focus. Your phone’s DND is not changed.', tog('focusMode.dnd'))}
+          ${row('Start music with Focus Mode', '', tog('focusMode.autoMusic'))}
+          ${row('Track working time', 'Focus sessions count toward a task’s actual time', tog('focusMode.trackWork'))}
+        </div>
+        <div class="set-group"><h3>Apps that stay accessible</h3>
+          <div class="set-row col"><div class="app-toggle-list">${APPS.map((a) => `<label class="app-toggle"><input type="checkbox" data-setting="focusMode.apps.${a.id}" ${s.focusMode.apps[a.id] ? 'checked' : ''}>${icon(a.icon)}${a.name}</label>`).join('')}</div>
+          <div class="sim-note">${icon('i-lock')}<div>App access is simulated inside Cadence. A web app cannot block other apps on your phone.</div></div></div>
+        </div>`;
+      case 'screen': return `
+        <div class="set-group">
+          ${row('Screen break reminders', `Separate from Pomodoro breaks. ${esc(st.text)}.`, tog('screenBreak.enabled'))}
+          <div class="set-row"><div class="lbl"><b>20-20-20 rule</b><span>Every 20 min, look ~20 ft away for 20 s</span></div><div class="ctl"><button class="btn btn-soft btn-sm" data-action="preset202020">${sb.interval === 20 && sb.duration === 20 ? icon('i-check') + 'On' : 'Use'}</button></div></div>
+        </div>
+        <div class="set-group"><h3>Remind me every</h3>
+          <div class="set-row col"><div class="pill-group">${[20, 30, 45, 60].map((m) => `<button class="pill" data-action="eyeInterval" data-id="${m}" aria-pressed="${sb.interval === m}">${m} min</button>`).join('')}</div></div>
+          ${row('Custom interval', 'Minutes', num('screenBreak.interval', 1, 240, 1))}
+        </div>
+        <div class="set-group"><h3>Break length</h3>
+          <div class="set-row col"><div class="pill-group">${[[20, '20 sec'], [60, '1 min'], [300, '5 min']].map(([v, l]) => `<button class="pill" data-action="eyeDuration" data-id="${v}" aria-pressed="${sb.duration === v}">${l}</button>`).join('')}</div></div>
+          ${row('Custom length', 'Seconds', num('screenBreak.duration', 5, 1800, 5))}
+        </div>
+        <div class="set-group"><h3>Behaviour</h3>
+          ${row('Apply during', '', sel('screenBreak.applyTo', [['both', 'Focus & general use'], ['focus', 'Focus sessions only'], ['general', 'General use only']]))}
+          ${row('Pause Pomodoro during screen breaks', 'When off, the timer keeps running', tog('screenBreak.pauseTimer'))}
+          ${row('Postpone by', 'Minutes', num('screenBreak.postponeMin', 1, 60, 1))}
+        </div>
+        <div class="set-group"><h3>Pause reminders</h3>
+          <div class="set-row col"><span class="small muted">${S.eye.snoozeUntil > Date.now() ? 'Paused until ' + esc(fmtWhen(S.eye.snoozeUntil)) : 'Reminders are active'}</span>
+            <div class="ctl">${[[30, '30 min'], [60, '1 hour'], [120, '2 hours']].map(([m, l]) => `<button class="btn btn-ghost btn-sm" data-action="eyeSnooze" data-id="${m}">${l}</button>`).join('')}<button class="btn btn-ghost btn-sm" data-action="eyeSnoozeTomorrow">Until tomorrow</button>${S.eye.snoozeUntil > Date.now() ? '<button class="btn btn-soft btn-sm" data-action="eyeUnsnooze">Resume now</button>' : ''}</div></div>
+          <div class="set-row"><button class="btn btn-soft btn-block" data-action="eyeNow">${icon('i-eye')}Try a screen break now</button></div>
+        </div>
+        <div class="sim-note">${icon('i-eye')}<div>The full-screen reminder shows while Cadence is open. It can’t appear over other apps or lock your phone; a system notification is sent when allowed.</div></div>`;
+      case 'breaks': return `
+        <div class="set-group"><h3>Shown during Pomodoro breaks</h3>
+          ${s.breakSuggestions.map((x, i) => `<div class="set-row"><div class="lbl"><span style="color:var(--ink)">${esc(x)}</span></div><div class="ctl"><button class="icon-btn sm" data-action="rmSuggestion" data-id="${i}" aria-label="Remove suggestion">${icon('i-trash')}</button></div></div>`).join('') || '<div class="set-row"><span class="small muted">No suggestions — add your own below.</span></div>'}
+          <div class="set-row col"><div class="row"><input class="input" id="newSuggestion" placeholder="Add a break idea" maxlength="120"><button class="btn btn-soft" data-action="addSuggestion">Add</button></div>
+          <button class="btn btn-ghost btn-sm" data-action="resetSuggestions" style="align-self:flex-start">Restore defaults</button></div>
+        </div>`;
+      case 'music': return `
+        <div class="set-group">
+          ${row('Default category', 'For Focus Mode and the player', sel('music.category', CadenceAudio.library.map((c) => [c.id, c.name])))}
+          ${row('Default volume', '', `<input type="range" class="range" style="width:140px" min="0" max="1" step="0.05" data-setting="music.volume" data-num value="${s.music.volume}" aria-label="Default volume">`)}
+          ${row('Pause during breaks', 'Resumes with the next focus session', tog('music.pauseOnBreak'))}
+        </div>
+        <p class="small muted" style="padding:0 6px">All tracks are generated on your device with the Web Audio API — royalty-free and available offline.</p>`;
+      case 'notifications': return `
+        <div class="set-group"><h3>System notifications</h3>
+          ${row('Permission', p === 'granted' ? 'Allowed — used when Cadence is in the background' : p === 'denied' ? 'Blocked in browser settings — in-app alerts are used' : p === 'unsupported' ? 'Not supported here — in-app alerts are used' : 'Not allowed yet — in-app alerts are used', p === 'default' ? '<button class="btn btn-primary btn-sm" data-action="askNotif">Allow</button>' : `<span class="chip ${p === 'granted' ? 'chip-ok' : 'chip-warn'}">${p}</span>`)}
+          ${row('Notification sounds', '', tog('notifications.sound'))}
+          <div class="set-row"><div class="sim-note" style="width:100%">${icon('i-bell')}<div>Web notifications can be late or missed when Cadence is closed, the browser is suspended or the phone sleeps.</div></div></div>
+        </div>
+        <div class="set-group"><h3>Notify me about</h3>${Object.entries(NOTIF_CATS).map(([k, [l]]) => row(l, '', tog('notifications.categories.' + k))).join('')}</div>
+        <div class="set-group"><h3>Timing</h3>
+          ${row('Default task reminder', 'For new tasks', sel('notifications.defaultReminder', [[0, 'At start'], [5, '5 min before'], [10, '10 min before'], [15, '15 min before'], [30, '30 min before'], [60, '1 hour before']], true))}
+          ${row('End-time warning', 'Minutes before a scheduled end', num('notifications.endLead', 0, 120, 5))}
+          ${row('Deadline warning', 'Minutes before a due date', num('notifications.deadlineLead', 5, 1440, 5))}
+          ${row('Daily planning reminder', '', `<input class="input" type="time" data-setting="notifications.dailyTime" value="${esc(s.notifications.dailyTime)}">`)}
+        </div>`;
+      case 'goals': return `
+        <div class="set-group">
+          ${row('Daily focus goal', 'Minutes', num('goals.dailyFocusMin', 10, 720, 10))}
+          ${row('Weekly focus goal', 'Hours', num('goals.weeklyFocusHours', 1, 80, 1))}
+          ${row('Weekly tasks goal', 'Tasks', num('goals.weeklyTasks', 1, 200, 1))}
+        </div>
+        <p class="small muted" style="padding:0 6px">Goals are just gentle markers — progress shows on the dashboard and in Insights.</p>`;
+      case 'data': {
+        const used = (() => { let n = 0; try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith(NS)) n += (localStorage.getItem(k) || '').length; } } catch (e) {} return n; })();
+        return `
+        <div class="set-group"><h3>Stored on this device</h3>
+          ${row('Stored data', `${S.tasks.length} tasks · ${S.sessions.length} sessions · ${S.eyeLog.length} screen-break records · ${S.notifs.length} notifications · ~${(used / 1024).toFixed(1)} KB`, '')}
+          <div class="set-row"><button class="btn btn-ghost" style="flex:1" data-action="viewData">View data</button><button class="btn btn-ghost" style="flex:1" data-action="exportData">Export</button></div>
+        </div>
+        <div class="set-group"><h3>Danger zone</h3>
+          ${row('Clear activity history', 'Removes sessions, screen-break history, notifications and achievements. Keeps tasks and settings.', '<button class="btn btn-danger-ghost btn-sm" data-action="clearHistory">Clear</button>')}
+          ${row('Reset application data', 'Deletes everything Cadence stored here', '<button class="btn btn-danger btn-sm" data-action="resetAll">Reset</button>')}
+        </div>`;
+      }
+      case 'about': return `
+        <div class="set-group">
+          ${row('Install as an app', isStandalone() ? 'Cadence is running as an installed app.' : deferredInstall ? 'Add Cadence to your home screen.' : 'Use your browser menu → “Add to Home screen” (Safari: Share → Add to Home Screen).', deferredInstall && !isStandalone() ? '<button class="btn btn-primary btn-sm" data-action="installApp">Install</button>' : '')}
+          ${row('Works offline', 'After the first visit the app is cached on your device.', '')}
+        </div>
+        <div class="set-group"><h3>Good to know</h3>
+          <div class="set-row col"><div class="sim-note">${icon('i-lock')}<div>Do Not Disturb and app restrictions are <b>simulated</b> inside Cadence. A native build could use Android’s Notification Policy Access, or iOS FamilyControls / ManagedSettings / DeviceActivity, with your permission.</div></div>
+          <p class="small muted">No account, no server: tasks, sessions and settings live only in this browser’s storage.</p></div>
+        </div>`;
+    }
+    return '';
+  }
+  function onSettingChanged(path) {
+    if (path === 'music.volume') { S.music.volume = S.settings.music.volume; CadenceAudio.setVolume(S.music.volume); save('music'); }
+    if (path === 'music.category' && !CadenceAudio.current) { S.music.category = S.settings.music.category; save('music'); }
+    if (path.startsWith('focusMode.apps') && !S.focus.active) { S.focus.apps = clone(S.settings.focusMode.apps); save('focus'); }
+    if (path === 'focusMode.defaultDuration' && !S.focus.active) S.focus.duration = S.settings.focusMode.defaultDuration;
+    if (path.startsWith('screenBreak.interval') && S.eye.accum > S.settings.screenBreak.interval * MIN) S.eye.accum = S.settings.screenBreak.interval * MIN - 5000;
+    if (path === 'screenBreak.enabled') { S.eye.lastTick = Date.now(); if (!S.settings.screenBreak.enabled && S.eye.active) endEye('skipped'); }
+    if (path.startsWith('pomodoro') && S.timer.status === 'idle') renderLive(true);
+    save('settings', 'eye');
+  }
+  document.addEventListener('change', (e) => {
+    const el = e.target.closest('[data-setting]'); if (!el) return;
+    let v = el.type === 'checkbox' ? el.checked : el.value;
+    if (el.hasAttribute('data-num')) { v = +v; if (!isFinite(v)) return; if (el.min !== '') v = Math.max(+el.min, v); if (el.max !== '') v = Math.min(+el.max, v); el.value = v; }
+    setPath(el.dataset.setting, v); onSettingChanged(el.dataset.setting);
+    if (el.type !== 'range') { renderSettingsKeepScroll(); }
+    toastSaved();
+  });
+  let savedT = 0; function toastSaved() { if (Date.now() - savedT > 2500) { savedT = Date.now(); toast('Settings saved', '', 'ok', { timeout: 1500 }); } }
+  function renderSettingsKeepScroll() { const y = window.scrollY; renderSettings(); window.scrollTo(0, y); }
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-step]'); if (!b) return;
+    const path = b.dataset.step; const inp = document.querySelector(`input[data-setting="${path}"]`); if (!inp) return;
+    inp.value = clamp((+inp.value || 0) + +b.dataset.d, +inp.min, +inp.max); inp.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+
+  /* --- data management --- */
+  function exportJSON() {
+    flush(); const out = {}; Object.keys(DEFAULTS).forEach((k) => (out[k] = S[k]));
+    return JSON.stringify({ app: 'Cadence', version: 1, exportedAt: new Date().toISOString(), data: out }, null, 2);
+  }
+  function viewData() {
+    flush();
+    const keys = Object.keys(DEFAULTS);
+    const m = openModal({ title: 'Stored application data', body: `
+      <table class="data-table">${keys.map((k) => `<tr><td><code>${NS}${k}</code></td><td>${((localStorage.getItem(NS + k) || '').length / 1024).toFixed(1)} KB</td></tr>`).join('')}</table>
+      <label class="field"><span>Inspect</span><select class="select" id="dataKey">${keys.map((k) => `<option>${k}</option>`).join('')}</select></label>
+      <pre class="json-view" id="dataView"></pre>`, foot: '<button class="btn btn-ghost" data-close>Close</button><button class="btn btn-primary" data-action="exportData">Export JSON</button>' });
+    const show = () => { const k = $('#dataKey', m.el).value; $('#dataView', m.el).textContent = JSON.stringify(S[k], null, 2); };
+    $('#dataKey', m.el).onchange = show; show();
+  }
+
+  /* ============ Router, theme & app shell ============ */
+  let navDepth = 0; let deferredInstall = null;
+  const isStandalone = () => (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+  const navState = () => ({ screen: ui.screen, section: ui.settingsSection || null, depth: navDepth });
+  function pushNav() { navDepth++; try { history.pushState(navState(), ''); } catch (e) {} }
+  function replaceNav() { try { history.replaceState(navState(), ''); } catch (e) {} }
+  function applyChrome() {
+    const sec = ui.screen === 'settings' && ui.settingsSection ? sectionById(ui.settingsSection) : null;
+    $('#topbarTitle').textContent = sec ? sec.title : $('#screen-' + ui.screen).dataset.title;
+    $('#backBtn').hidden = !(sec || ui.screen === 'insights');
+    $('#topInsightsBtn').hidden = ui.screen === 'insights';
+    $('#fab').hidden = !['tasks', 'calendar'].includes(ui.screen);
+    $$('.nav-item').forEach((n) => { if (n.dataset.screen === ui.screen) n.setAttribute('aria-current', 'page'); else n.removeAttribute('aria-current'); });
+  }
+  function go(screen, opts = {}) {
+    if (!document.getElementById('screen-' + screen)) screen = 'home';
+    if (screen !== ui.screen) ui.prevScreen = ui.screen;
+    ui.screen = screen; S.ui.screen = screen === 'insights' ? (ui.prevScreen || 'home') : screen; save('ui');
+    ui.settingsSection = screen === 'settings' ? (opts.section || null) : null;
+    $$('.screen').forEach((s) => { s.hidden = s.id !== 'screen-' + screen; s.classList.toggle('push', !!opts.push); });
+    if (opts.push) pushNav(); else if (!opts.fromPop) replaceNav();
+    applyChrome(); renderAll(); window.scrollTo(0, 0);
+  }
+  function goBack() {
+    if (navDepth > 0) { try { history.back(); return; } catch (e) {} }
+    if (ui.settingsSection) { ui.settingsSection = null; replaceNav(); applyChrome(); renderSettings(); window.scrollTo(0, 0); }
+    else go(ui.prevScreen && ui.prevScreen !== ui.screen ? ui.prevScreen : 'home');
+  }
+  window.addEventListener('popstate', (e) => {
+    const st = e.state || { screen: 'home', section: null, depth: 0 };
+    navDepth = st.depth || 0;
+    modalStack.slice().forEach((m) => m.dismissible && m.close());
+    if (!$('#notifDrawer').hidden) closeDrawer();
+    go(st.screen, { fromPop: true, section: st.section });
+  });
+  function renderAll() {
+    const s = ui.screen;
+    if (s === 'home') renderHome(); else if (s === 'tasks') renderTasks(); else if (s === 'calendar') renderCalendar();
+    else if (s === 'focus') renderFocus(); else if (s === 'insights') renderInsights(); else if (s === 'settings') renderSettings();
+    renderMusic(); updateBell();
+  }
+  const darkMQ = window.matchMedia ? matchMedia('(prefers-color-scheme: dark)') : null;
+  function applyTheme() {
+    const t = S.settings.general.theme;
+    const dark = t === 'dark' || (t === 'system' && darkMQ && darkMQ.matches);
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    const m = $('meta[name="theme-color"]'); if (m) m.content = dark ? '#110E19' : '#F6F3FC';
+    if (ui.screen === 'insights') renderCharts();
+  }
+  if (darkMQ) { if (darkMQ.addEventListener) darkMQ.addEventListener('change', applyTheme); else if (darkMQ.addListener) darkMQ.addListener(applyTheme); }
+  function buzz(pattern) { if (S.settings.general.vibrate && navigator.vibrate) { try { navigator.vibrate(pattern); } catch (e) {} } }
+  window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredInstall = e; if (ui.screen === 'settings') renderSettings(); });
+  window.addEventListener('appinstalled', () => { deferredInstall = null; toast('Cadence installed', 'Open it from your home screen.', 'ok'); });
+
+  const A = {
+    newTask: () => openTaskForm(), editTask: (el) => openTaskForm(el.dataset.id), deleteTask: (el) => deleteTask(el.dataset.id),
+    toggleDone: (el) => { const t = getTask(el.dataset.id); if (t) setStatus(t, t.status === 'completed' ? 'pending' : 'completed'); },
+    startWork: (el) => { const t = getTask(el.dataset.id); startWork(t, 'manual'); if (t) toast('Tracking time', `${t.title}${isScheduled(t) && tms(t.start) > Date.now() ? ' — started early' : ''}`, 'ok'); renderAll(); },
+    stopWork: (el) => { const t = getTask(el.dataset.id); if (t) { stopWork(t, Date.now(), true); toast('Stopped tracking', `${fmtDur(t.actualMs)} worked in total`); } renderAll(); },
+    postpone: (el) => openPostpone(el.dataset.id),
+    openFocusSetup: (el) => openFocusSetup(el.dataset.id || null), openFocus: () => go('focus'), endFocus: () => endFocusMode(),
+    timerStart: () => { if (S.focus.active && S.timer.phase === 'focus') { startTimer(); return; } startTimer(); if (S.timer.phase !== 'focus') breakToast(); },
+    timerPause: pauseTimer, timerResume: resumeTimer, timerReset: () => resetTimer(), timerSkip: skipPhase,
+    setPhase: (el) => setPhase(el.dataset.id),
+    goTodayTasks: () => { S.ui.taskView = 'today'; save('ui'); go('tasks'); }, goCalendar: () => go('calendar'), goInsights: () => go('insights', { push: true }),
+    goEyeSettings: () => openSettingsSection('screen'), goGoalSettings: () => openSettingsSection('goals'),
+    openSection: (el) => openSettingsSection(el.dataset.id),
+    setTheme: (el) => { S.settings.general.theme = el.dataset.id; save('settings'); applyTheme(); renderSettingsKeepScroll(); },
+    installApp: async () => { if (!deferredInstall) return; deferredInstall.prompt(); try { await deferredInstall.userChoice; } catch (e) {} deferredInstall = null; renderAll(); },
+    calDay: (el) => { ui.calSelected = el.dataset.id; ui.calCursor = new Date(el.dataset.id + 'T00:00'); S.ui.calView = 'day'; go('calendar'); },
+    calSelect: (el) => { ui.calSelected = el.dataset.id; const d = new Date(el.dataset.id + 'T00:00'); if (d.getMonth() !== ui.calCursor.getMonth()) ui.calCursor = d; renderCalendar(); $('#calAgenda').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); },
+    calDayView: (el) => { ui.calSelected = el.dataset.id; ui.calCursor = new Date(el.dataset.id + 'T00:00'); S.ui.calView = 'day'; save('ui'); renderCalendar(); },
+    calAdd: (el) => { const d = new Date(el.dataset.id + 'T09:00'); openTaskForm(null, { start: toLocalInput(d), end: toLocalInput(d.getTime() + HOUR), estimate: 60 }); },
+    musicToggle, musicNext: () => musicStep(1), musicPrev: () => musicStep(-1), musicPlay: (el) => playTrack(el.dataset.id), musicFav: (el) => toggleFav(el.dataset.id),
+    musicCat: (el) => { S.music.category = el.dataset.id; save('music'); renderMusic(); },
+    musicShuffle: () => { S.music.shuffle = !S.music.shuffle; save('music'); renderMusic(); }, musicRepeat: () => { S.music.repeat = !S.music.repeat; save('music'); renderMusic(); },
+    musicStop: () => { CadenceAudio.stop(); renderMusic(); },
+    simApp: (el) => { const a = APPS.find((x) => x.id === el.dataset.id); if (appAccessible(a.id)) toast(`${a.name} opened`, 'Simulated — accessible during this session.', 'ok', { timeout: 2000 }); else toast(`${a.name} is restricted`, 'Simulated block until your break. Edit accessible apps to allow it.', 'err', { timeout: 2600 }); },
+    toggleEditApps: () => { ui.editApps = !ui.editApps; renderFocus(); },
+    eyeDone: () => completeEye(true), eyeSkip: () => skipEye(), eyePostpone: () => postponeEye(),
+    eyeSettings: () => { postponeEye(); openSettingsSection('screen'); },
+    eyeNow: () => { if (!S.settings.screenBreak.enabled || S.eye.active) return; triggerEye(); },
+    eyeSnooze: (el) => snoozeEye(+el.dataset.id * MIN, `For ${fmtDur(+el.dataset.id * MIN)}.`),
+    eyeSnoozeTomorrow: () => { const t = addDays(startOfDay(new Date()), 1); t.setHours(8); snoozeEye(t.getTime() - Date.now(), `Until ${fmtWhen(t)}.`); },
+    eyeUnsnooze: () => { S.eye.snoozeUntil = 0; save('eye'); renderAll(); toast('Screen Break Reminders resumed'); },
+    eyeEnable: () => { S.settings.screenBreak.enabled = true; S.eye.lastTick = Date.now(); save('settings', 'eye'); renderAll(); },
+    eyeInterval: (el) => { S.settings.screenBreak.interval = +el.dataset.id; onSettingChanged('screenBreak.interval'); renderSettingsKeepScroll(); toastSaved(); },
+    eyeDuration: (el) => { S.settings.screenBreak.duration = +el.dataset.id; onSettingChanged('screenBreak.duration'); renderSettingsKeepScroll(); toastSaved(); },
+    preset202020: () => { Object.assign(S.settings.screenBreak, { interval: 20, duration: 20, enabled: true }); onSettingChanged('screenBreak.interval'); renderSettingsKeepScroll(); toast('20-20-20 rule applied', 'Every 20 min, look ~20 ft away for 20 s.', 'ok'); },
+    askNotif: askNotifPermission,
+    readNotif: (el, e) => { if (e.target.closest('[data-action=delNotif]')) return; const n = S.notifs.find((x) => x.id === el.dataset.id); if (n) { n.read = true; save('notifs'); renderNotifs(); updateBell(); } },
+    delNotif: (el) => { S.notifs = S.notifs.filter((x) => x.id !== el.dataset.id); save('notifs'); renderNotifs(); updateBell(); },
+    testChime: () => CadenceAudio.chime('focusEnd', S.settings.general.chimeVolume),
+    addSuggestion: () => { const i = $('#newSuggestion'); const v = i.value.trim(); if (!v) return; S.settings.breakSuggestions.push(v); save('settings'); renderSettingsKeepScroll(); toast('Suggestion added', '', 'ok'); },
+    rmSuggestion: (el) => { S.settings.breakSuggestions.splice(+el.dataset.id, 1); save('settings'); renderSettingsKeepScroll(); },
+    resetSuggestions: () => { S.settings.breakSuggestions = DEFAULT_SUGGESTIONS.slice(); save('settings'); renderSettingsKeepScroll(); },
+    viewData, exportData: () => {
+      const blob = new Blob([exportJSON()], { type: 'application/json' }); const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = `cadence-data-${dayKey(new Date())}.json`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      toast('Export started', 'Your data was downloaded as JSON.', 'ok');
+    },
+    clearHistory: async () => {
+      if (!(await confirmDialog({ title: 'Clear activity history?', message: 'Focus sessions, screen-break history, notifications and achievements will be deleted. Tasks and settings stay.', confirmText: 'Clear history', danger: true }))) return;
+      S.sessions = []; S.eyeLog = []; S.notifs = []; S.ach = {}; S.tasks.forEach((t) => { t.focusMs = 0; }); save('sessions', 'eyeLog', 'notifs', 'ach', 'tasks'); renderAll(); toast('Activity history cleared', '', 'ok');
+    },
+    resetAll: async () => {
+      if (!(await confirmDialog({ title: 'Reset all data?', message: 'This permanently deletes every task, setting and record Cadence stored in this browser.', confirmText: 'Reset everything', danger: true }))) return;
+      CadenceAudio.stop(); Object.keys(localStorage).filter((k) => k.startsWith(NS)).forEach((k) => localStorage.removeItem(k));
+      dirty.clear(); window.removeEventListener('pagehide', flush); window.removeEventListener('beforeunload', flush); location.reload();
+    },
+    wMove: (el) => { const o = S.widgets.order.filter((w) => !S.widgets.hidden.includes(w)); const i = o.indexOf(el.dataset.id); const j = i + +el.dataset.dir; if (j < 0 || j >= o.length) return; [o[i], o[j]] = [o[j], o[i]]; S.widgets.order = o.concat(S.widgets.hidden); save('widgets'); renderHome(); },
+    wHide: (el) => { S.widgets.hidden.push(el.dataset.id); save('widgets'); renderHome(); },
+    wShow: (el) => { S.widgets.hidden = S.widgets.hidden.filter((w) => w !== el.dataset.id); S.widgets.order = S.widgets.order.filter((w) => w !== el.dataset.id).concat(el.dataset.id); S.widgets.order = S.widgets.order.filter((w) => !S.widgets.hidden.includes(w)).concat(S.widgets.hidden); save('widgets'); renderHome(); },
+    wReset: () => { S.widgets = clone(DEFAULTS.widgets); save('widgets'); renderHome(); },
+  };
+  const CHANGE = {
+    timerTask: (el) => { const prev = timerTask(); if (S.timer.phase === 'focus' && S.timer.status === 'running') stopWork(prev, Date.now(), false, 'timer'); S.timer.taskId = el.value || null; if (S.timer.phase === 'focus' && S.timer.status === 'running' && S.settings.focusMode.trackWork) startWork(timerTask(), 'timer'); save('timer'); renderActiveCard(); },
+    toggleSub: (el) => { const t = getTask(el.dataset.id); const s = t && t.subtasks.find((x) => x.id === el.dataset.sid); if (s) { s.done = el.checked; if (t.status === 'pending' && s.done) t.status = 'inprogress'; save('tasks'); renderAll(); } },
+    musicCat: (el) => { S.music.category = el.value; save('music'); if (CadenceAudio.playing || el.value !== 'fav') playCategory(el.value); else renderMusic(); },
+    appToggle: (el) => { S.focus.apps[el.dataset.id] = el.checked; S.settings.focusMode.apps = clone(S.focus.apps); save('focus', 'settings'); renderFocus(); },
+    resumeAfterBreak: (el) => { S.focus.resumeAfterBreak = el.checked; save('focus'); },
+  };
+  document.addEventListener('click', (e) => {
+    const el = e.target.closest('[data-action]'); if (!el || el.disabled) return;
+    const fn = A[el.dataset.action]; if (!fn) return;
+    if (el.tagName === 'A') e.preventDefault();
+    fn(el, e);
+  });
+  document.addEventListener('keydown', (e) => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[role=button][data-action]')) { e.preventDefault(); e.target.click(); }
+    if (e.key === 'Enter' && e.target.id === 'newSuggestion') A.addSuggestion();
+  });
+  document.addEventListener('change', (e) => { const el = e.target.closest('[data-action-change]'); if (el && CHANGE[el.dataset.actionChange]) CHANGE[el.dataset.actionChange](el, e); });
+
+  // static wiring
+  $$('.nav-item').forEach((n) => n.addEventListener('click', () => go(n.dataset.screen)));
+  $('#topInsightsBtn').onclick = () => go('insights', { push: true });
+  $('#backBtn').onclick = goBack;
+  $('#fab').onclick = () => { if (ui.screen === 'calendar') A.calAdd({ dataset: { id: ui.calSelected } }); else openTaskForm(); };
+  $('#filtersToggle').onclick = () => { const f = $('#taskFilters'); f.hidden = !f.hidden; $('#filtersToggle').setAttribute('aria-expanded', String(!f.hidden)); $('#filtersToggle').classList.toggle('btn-soft', !f.hidden); };
+  $('#bellBtn').onclick = openDrawer; $('#notifClose').onclick = closeDrawer; $('#scrim').onclick = closeDrawer;
+  $('#notifReadAll').onclick = () => { S.notifs.forEach((n) => (n.read = true)); save('notifs'); renderNotifs(); updateBell(); };
+  $('#notifClear').onclick = async () => { if (!S.notifs.length) return; if (await confirmDialog({ title: 'Clear notifications?', message: 'Your notification history will be removed.', confirmText: 'Clear', danger: true })) { S.notifs = []; save('notifs'); renderNotifs(); updateBell(); } };
+  $('#qaNewTask').onclick = () => openTaskForm();
+  $('#qaFocus').onclick = () => openFocusSetup(); $('#qaCalendar').onclick = () => go('calendar');
+  $('#customizeBtn').onclick = () => { ui.editingWidgets = !ui.editingWidgets; renderHome(); };
+  $('#taskViews').addEventListener('click', (e) => { const b = e.target.closest('[data-view]'); if (!b) return; S.ui.taskView = b.dataset.view; save('ui'); renderTasks(); });
+  $('#taskSearch').addEventListener('input', (e) => { ui.search = e.target.value; renderTasks(); });
+  $('#fPriority').onchange = (e) => { ui.filters.priority = e.target.value; renderTasks(); };
+  $('#fCategory').onchange = (e) => { ui.filters.category = e.target.value; renderTasks(); };
+  $('#fStatus').onchange = (e) => { ui.filters.status = e.target.value; renderTasks(); };
+  $('#fSort').onchange = (e) => { S.ui.sort = e.target.value; save('ui'); renderTasks(); };
+  $('#calViews').addEventListener('click', (e) => { const b = e.target.closest('[data-cview]'); if (!b) return; S.ui.calView = b.dataset.cview; ui.calCursor = new Date(ui.calSelected + 'T00:00'); save('ui'); renderCalendar(); });
+  const calShift = (dir) => { const v = S.ui.calView; const c = ui.calCursor;
+    ui.calCursor = v === 'month' ? new Date(c.getFullYear(), c.getMonth() + dir, 1) : addDays(c, dir * (v === 'week' ? 7 : 1));
+    if (v !== 'month') ui.calSelected = dayKey(v === 'day' ? ui.calCursor : weekStartOf(ui.calCursor)); renderCalendar(); };
+  $('#calPrev').onclick = () => calShift(-1); $('#calNext').onclick = () => calShift(1);
+  $('#calToday').onclick = () => { ui.calCursor = new Date(); ui.calSelected = dayKey(new Date()); renderCalendar(); };
+  $('#statRange').addEventListener('click', (e) => { const b = e.target.closest('[data-range]'); if (!b) return; ui.statRange = b.dataset.range; renderInsights(); });
+
+  // widget drag & drop (desktop) — arrows provide the accessible alternative
+  let dragId = null;
+  $('#widgetGrid').addEventListener('dragstart', (e) => { const w = e.target.closest('[data-widget]'); if (!w || !ui.editingWidgets) return; dragId = w.dataset.widget; w.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', dragId); } catch (er) {} });
+  $('#widgetGrid').addEventListener('dragover', (e) => { if (!dragId) return; const w = e.target.closest('[data-widget]'); if (!w) return; e.preventDefault(); $$('.drop-target').forEach((x) => x.classList.remove('drop-target')); if (w.dataset.widget !== dragId) w.classList.add('drop-target'); });
+  $('#widgetGrid').addEventListener('drop', (e) => {
+    const w = e.target.closest('[data-widget]'); if (!w || !dragId) return; e.preventDefault();
+    const o = S.widgets.order.filter((x) => !S.widgets.hidden.includes(x)); const from = o.indexOf(dragId), to = o.indexOf(w.dataset.widget);
+    if (from >= 0 && to >= 0 && from !== to) { o.splice(to, 0, o.splice(from, 1)[0]); S.widgets.order = o.concat(S.widgets.hidden); save('widgets'); }
+    dragId = null; renderHome();
+  });
+  $('#widgetGrid').addEventListener('dragend', () => { dragId = null; $$('.dragging,.drop-target').forEach((x) => x.classList.remove('dragging', 'drop-target')); });
+
+  /* ============ Main loop (timestamp based) ============ */
+  let lastSlow = 0, lastMinute = new Date().getMinutes();
+  function tick() {
+    const now = Date.now();
+    let guard = 0;
+    while (S.timer.status === 'running' && now >= S.timer.endAt && guard++ < 12) completePhase(S.timer.endAt);
+    eyeTick(now);
+    renderLive(false); updateMusicProgress();
+    const bar = $('.js-eye-widget-bar'); if (bar) { const st = eyeStatus(); if (st.left != null) bar.style.width = `${clamp((1 - st.left / (S.settings.screenBreak.interval * MIN)) * 100, 0, 100)}%`; }
+    if (now - lastSlow > 15000) { lastSlow = now; checkReminders(); save('eye'); }
+    const m = new Date().getMinutes();
+    if (m !== lastMinute) { lastMinute = m; if (!modalStack.length && !ui.editingWidgets && ['home', 'calendar', 'focus'].includes(ui.screen) && !document.activeElement.closest('select,input')) renderAll(); }
+  }
+  document.addEventListener('visibilitychange', () => { tick(); if (document.visibilityState === 'visible') { S.eye.lastTick = Date.now(); renderAll(); } });
+
+  // init
+  (function init() {
+    applyTheme();
+    if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) { try { navigator.serviceWorker.register('sw.js').catch(() => {}); } catch (e) {} }
+    if (ui.screen === 'insights') ui.screen = 'home';
+    CadenceAudio.setVolume && (S.music.volume = isNum(S.music.volume) ? S.music.volume : S.settings.music.volume);
+    if (!S.eye.lastTick) S.eye.lastTick = Date.now();
+    S.eye.lastTick = Date.now(); // don't count time while Cadence was closed
+    const startScreen = ui.screen; ui.screen = null; go(startScreen);
+    // Restore in-flight states after refresh
+    if (S.eye.active) { if (Date.now() >= S.eye.active.endAt) completeEye(false); else showEyeOverlay(); }
+    let guard = 0; while (S.timer.status === 'running' && Date.now() >= S.timer.endAt && guard++ < 12) completePhase(S.timer.endAt);
+    if (S.timer.status === 'idle' && S.timer.awaiting === 'break') promptBreak();
+    else if (S.timer.status === 'idle' && S.timer.awaiting === 'focus') promptNextFocus();
+    checkReminders(); updateBell();
+    if (corrupted.length) toast('Some saved data was reset', `Unreadable storage for: ${corrupted.join(', ')}. Defaults were restored.`, 'err', { timeout: 7000 });
+    setInterval(tick, 500);
+    // first-run hint
+    if (!localStorage.getItem(NS + 'seen')) {
+      try { localStorage.setItem(NS + 'seen', '1'); } catch (e) {}
+      setTimeout(() => toast('Welcome to Cadence', 'Add a task, then press Focus to start your first session. Everything stays in this browser.', 'ok', { timeout: 7000 }), 600);
+    }
+  })();
+
+  // Expose a tiny API for debugging/testing in the console.
+  window.Cadence = { state: S, go, flush, _completePhase: completePhase, _triggerEye: triggerEye };
+})();
