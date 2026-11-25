@@ -13,9 +13,10 @@ Everything stays on your phone: no account, no server, no internet needed.</p>
 
 - **Tasks and calendar.** Tasks with schedules, due dates, priorities, categories, checklists and reminders. Month, week and day views.
 - **Pomodoro timer and Focus Mode.** Focus sessions with short and long breaks, tied to a task if you like, with background music.
-- **Do Not Disturb.** Switches the phone's DND on during focus sessions and off for breaks. Calls, repeat callers, messages and calendar events can still come through if you allow them.
-- **App lock.** During focus sessions, apps you haven't allowed show a lock screen until your next break. Calls, Settings, the home screen and Cadence are always allowed.
-- **Screen breaks.** Reminders to rest your eyes, with a guided countdown.
+- **Do Not Disturb** (Android). Switches the phone's DND on while a focus session runs. Pausing, ending focus or starting a break puts DND back the way it was. Calls, repeat callers, messages and calendar events can still come through if you allow them.
+- **App lock.** While a focus session runs, apps you haven't allowed show a lock screen. Pausing or ending focus unlocks them straight away. Calls, Settings, the home screen and Cadence are always allowed.
+- **Screen breaks.** Reminders to rest your eyes, with a guided countdown that keeps its time when you rotate the phone.
+- **Vibration and sound.** Timer and screen-break alerts vibrate and play a sound. Vibration works even when the phone's touch feedback is off.
 - **Focus music.** Built-in tracks generated on the device (lo-fi, ambient, rain, nature and more), plus your own uploads in any category, including *Others*.
 - **Insights and goals.** Focus time, tasks completed, streaks and charts, based only on your own activity.
 - **Dashboard widgets.** An empty Home tab you fill from the widget gallery.
@@ -23,7 +24,7 @@ Everything stays on your phone: no account, no server, no internet needed.</p>
 **Outside the app**
 
 - **Home-screen widgets:** Focus timer, Today, Upcoming schedule, Deadlines, Daily progress, Weekly focus, Focus streak, Mini calendar, Focus music, Screen breaks and Daily quote. They update as soon as anything changes in the app, every minute during a focus session, and at midnight.
-- **Full-screen alerts** when a focus session, break or screen break ends. They wake the screen and play a sound with vibration.
+- **Full-screen alerts** when a focus session, break or screen break ends. They wake the screen, show over the lock screen or the app you're using, and play a sound with vibration.
 - **Notifications** for task start and end times, deadlines, overdue tasks and the daily plan. They're scheduled with Android alarms, so they fire with the app closed and after a reboot.
 - **Notification controls.** An ongoing timer notification (pause, resume, skip) and a music player in the notification shade.
 
@@ -63,27 +64,30 @@ Google restricts several of these on the Play Store, so publishing needs a justi
 
 ## Data
 
-Data is stored on the device (Android SharedPreferences, via Capacitor Preferences). Uploaded music is copied into the app's private storage. **Settings → Data & storage** has **Back up** (save everything to a JSON file through the share sheet) and **Restore**.
+Data is stored on the device through Capacitor Preferences (SharedPreferences on Android, UserDefaults on iPhone). Widgets and extensions read a copy of the state the app publishes; on iPhone this copy is in the App Group `group.app.cadence.focus`. Uploaded music is copied into the app's private storage. **Settings → Data & storage** has **Back up** (save everything to a JSON file through the share sheet) and **Restore**.
 
 ## Project layout
 
 | Path | What it is |
 | --- | --- |
-| `www/` | The app interface: `index.html`, `style.css`, `script.js` (app logic), `audio.js` (music engine), `native.js` (device storage and the bridge to Android) |
+| `www/` | The app interface: `index.html`, `style.css`, `script.js` (app logic), `audio.js` (music engine), `native.js` (device storage and the bridge to Android and iOS) |
 | `android/` | The native Android project (Capacitor 8). Native code is in `android/app/src/main/java/app/cadence/focus/` |
 | `ios/App/` | The native iOS project: `App/Native/` (app), `Shared/` (code shared with the extensions), `CadenceWidgets/` (widgets and Live Activity), `CadenceMonitor/` (Screen Time extension), `project.yml` (Xcode project definition) |
 | `resources/icons/` | Logo artwork: `logo-source.png` (original), `logo-mark.png` (hourglass on transparent), `app-icon-512.png` |
 
-The main native classes:
+The main native classes. Both platforms use the same names where the role is the same:
 
-| Class | Role |
-| --- | --- |
-| `CadencePlugin` | Bridge the app calls: sync state, permissions, app list, music files, widgets, vibration |
-| `Controller` | Keeps alarms, notifications, Do Not Disturb and widgets in step with the app's state |
-| `TimerEngine` | Native copy of the Pomodoro timer, so it keeps running while the app is closed |
-| `AlertActivity`, `BlockActivity` | Full-screen alert, and the app-lock screen |
-| `FocusService` | Foreground service for background music and the app lock |
-| `Widgets`, `MoreWidgets` | Draw the home-screen widgets |
+| Android | iOS | Role |
+| --- | --- | --- |
+| `CadencePlugin` | `CadencePlugin` | Bridge the app calls: sync state, permissions, app list, music files, widgets, vibration |
+| `Controller` | `Controller` | Keeps alarms or notifications, DND, the app lock and widgets in step with the app's state |
+| `TimerEngine` | `TimerEngine` | Native copy of the Pomodoro timer, so it keeps running while the app is closed |
+| `AlertActivity` | `AlarmController` | Full-screen alert when a session or break ends |
+| `AppLock`, `BlockActivity`, `FocusService` | `AppLock`, `CadenceMonitor` | App lock (and, on Android, background music) |
+| `Dnd` | — | Turns DND on and off and restores your previous setting |
+| `MusicSession` | `NowPlaying` | Music controls outside the app |
+| `Widgets`, `MoreWidgets` | `CadenceWidgets`, `TimerLiveActivity` | Home-screen widgets (and the Live Activity on iPhone) |
+| `ActionReceiver` | `CadenceActions` | Buttons in widgets and notifications |
 
 ## Build and run (Android)
 
