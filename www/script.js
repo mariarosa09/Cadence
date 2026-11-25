@@ -1,14 +1,19 @@
 /* ===========================================================
-   Cadence — application logic (vanilla JS, frontend only)
+   Cadence — application logic
+   All data lives on the device (see native.js). The Android side
+   mirrors the timer, reminders and screen breaks so widgets and
+   notifications keep working while the app is closed.
    Sections:
      1. Utilities          6. Notifications & reminders
      2. Storage & state    7. Pomodoro timer & Focus Mode
      3. UI primitives      8. Screen Break Reminder
      4. Tasks model        9. Music player UI
-     5. Stats & rewards   10. Views, router, init
+     5. Stats & rewards   10. Views, router, device sync, init
    =========================================================== */
-(() => {
+window.CadenceStore.ready.then(() => {
   'use strict';
+  const Store = window.CadenceStore;
+  const Device = window.CadenceDevice;
 
   /* ============ 1. Utilities ============ */
   const $ = (s, r = document) => r.querySelector(s);
@@ -34,14 +39,14 @@
     return `${h}:${pad(d.getMinutes())} ${d.getHours() < 12 ? 'AM' : 'PM'}`;
   }
   const fmtDay = (d, o) => new Date(d).toLocaleDateString(undefined, o || { weekday: 'short', month: 'short', day: 'numeric' });
-  function relDay(d) {
-    const k = dayKey(d), now = new Date();
+  function relDay(d, ref) {
+    const k = dayKey(d), now = ref ? new Date(ref) : new Date();
     if (k === dayKey(now)) return 'Today';
     if (k === dayKey(addDays(now, 1))) return 'Tomorrow';
     if (k === dayKey(addDays(now, -1))) return 'Yesterday';
     return fmtDay(d);
   }
-  const fmtWhen = (d) => `${relDay(d)}, ${fmtTime(d)}`;
+  const fmtWhen = (d, ref) => `${relDay(d, ref)}, ${fmtTime(d)}`;
   function fmtDur(ms) {
     const m = Math.round(ms / MIN);
     if (m < 60) return `${m}m`;
@@ -53,9 +58,9 @@
     return m >= 60 ? `${Math.floor(m / 60)}:${pad(m % 60)}:${pad(s % 60)}` : `${pad(m)}:${pad(s % 60)}`;
   }
   const fmtSec = (s) => `${Math.floor(s / 60)}:${pad(Math.floor(s % 60))}`;
-  function fmtRange(a, b) {
+  function fmtRange(a, b, ref) {
     const A = new Date(a), B = new Date(b);
-    return dayKey(A) === dayKey(B) ? `${relDay(A)}, ${fmtTime(A)} – ${fmtTime(B)}` : `${fmtWhen(A)} → ${fmtWhen(B)}`;
+    return dayKey(A) === dayKey(B) ? `${relDay(A, ref)}, ${fmtTime(A)} – ${fmtTime(B)}` : `${fmtWhen(A, ref)} → ${fmtWhen(B, ref)}`;
   }
   function weekStartOf(d) {
     const x = startOfDay(d); const ws = S.settings.general.weekStart;
@@ -65,15 +70,12 @@
   /* ============ 2. Storage & state ============ */
   const NS = 'cadence.v1.';
   const corrupted = [];
-  const APPS = [
-    { id: 'phone', name: 'Phone', icon: 'i-phone', color: '#3A7A57' },
-    { id: 'messages', name: 'Messages', icon: 'i-msg', color: '#3E847C' },
-    { id: 'email', name: 'Email', icon: 'i-mail', color: '#4A6FA5' },
-    { id: 'calendar', name: 'Calendar', icon: 'i-cal', color: '#B8692F' },
-    { id: 'browser', name: 'Browser', icon: 'i-globe', color: '#5B5BA8' },
-    { id: 'social', name: 'Social Media', icon: 'i-users', color: '#B04A6A' },
-    { id: 'games', name: 'Games', icon: 'i-game', color: '#8A5A9E' },
-    { id: 'other', name: 'Other Apps', icon: 'i-apps', color: '#6B7579' },
+  // What still gets through while Do Not Disturb is on during focus (alarms and media always do).
+  const DND_ALLOW = [
+    { id: 'calls', name: 'Calls', icon: 'i-phone' },
+    { id: 'repeatCallers', name: 'Repeat callers', icon: 'i-repeat' },
+    { id: 'messages', name: 'Messages', icon: 'i-msg' },
+    { id: 'events', name: 'Calendar events', icon: 'i-cal' },
   ];
   const DEFAULT_SUGGESTIONS = [
     'Stand up and stretch your arms, back and legs.',
@@ -87,7 +89,7 @@
     settings: {
       general: { theme: 'system', timeFormat: '12', weekStart: 1, sounds: true, timerSound: true, chimeVolume: 0.5, vibrate: true },
       pomodoro: { focus: 25, short: 5, long: 15, interval: 4, autoTransition: true },
-      focusMode: { defaultDuration: 25, dnd: true, apps: { phone: true, messages: true, email: false, calendar: true, browser: false, social: false, games: false, other: false }, autoMusic: true, trackWork: true },
+      focusMode: { defaultDuration: 25, dnd: true, allow: { calls: true, repeatCallers: true, messages: false, events: true }, autoMusic: true, trackWork: true },
       screenBreak: { enabled: true, interval: 20, duration: 20, applyTo: 'both', pauseTimer: true, postponeMin: 5 },
       notifications: { categories: { upcoming: true, start: true, endApproach: true, overdue: true, deadline: true, pomodoro: true, breakDone: true, screenBreak: true, daily: true, achievements: true }, defaultReminder: 10, endLead: 10, deadlineLead: 60, dailyTime: '09:00', sound: true },
       music: { category: 'lofi', volume: 0.6, pauseOnBreak: true },
@@ -97,7 +99,7 @@
     tasks: [], sessions: [], eyeLog: [], notifs: [], ach: {},
     widgets: { order: ['pomodoro', 'today', 'upnext', 'progress', 'deadlines', 'weekly', 'streak', 'music', 'minical', 'screenbreak', 'quote'], hidden: [] },
     timer: { phase: 'focus', status: 'idle', endAt: 0, remaining: 0, total: 0, cycle: 0, taskId: null, awaiting: null, phaseStartedAt: 0 },
-    focus: { active: false, taskId: null, duration: 25, music: 'lofi', dnd: true, apps: null, resumeAfterBreak: true, startedAt: 0 },
+    focus: { active: false, taskId: null, duration: 25, music: 'lofi', dnd: true, allow: null, resumeAfterBreak: true, startedAt: 0 },
     eye: { accum: 0, lastTick: 0, snoozeUntil: 0, active: null },
     music: { category: 'lofi', trackId: null, repeat: false, shuffle: false, favorites: [], volume: 0.6 },
     sent: {},
@@ -123,7 +125,7 @@
   function load(key) {
     const def = DEFAULTS[key];
     try {
-      const raw = localStorage.getItem(NS + key);
+      const raw = Store.get(NS + key);
       if (raw == null) return clone(def);
       const v = JSON.parse(raw);
       if (Array.isArray(def) && !Array.isArray(v)) throw new Error('expected array');
@@ -136,7 +138,7 @@
   const S = {};
   Object.keys(DEFAULTS).forEach((k) => { S[k] = load(k); });
   // Free-form maps (ach, sent) are preserved as-is.
-  ['ach', 'sent'].forEach((k) => { try { const r = JSON.parse(localStorage.getItem(NS + k) || '{}'); S[k] = r && typeof r === 'object' && !Array.isArray(r) ? r : {}; } catch (e) { S[k] = {}; } });
+  ['ach', 'sent'].forEach((k) => { try { const r = JSON.parse(Store.get(NS + k) || '{}'); S[k] = r && typeof r === 'object' && !Array.isArray(r) ? r : {}; } catch (e) { S[k] = {}; } });
 
   function normalizeTask(t) {
     if (!t || typeof t !== 'object' || !t.title) return null;
@@ -162,7 +164,7 @@
   Object.keys(ALL_WIDGETS).forEach((w) => { if (!S.widgets.order.includes(w)) S.widgets.order.push(w); });
   if (!['focus', 'short', 'long'].includes(S.timer.phase)) S.timer = clone(DEFAULTS.timer);
   if (!['idle', 'running', 'paused'].includes(S.timer.status)) S.timer.status = 'idle';
-  if (!S.focus.apps) S.focus.apps = clone(S.settings.focusMode.apps);
+  if (!S.focus.allow) S.focus.allow = clone(S.settings.focusMode.allow);
 
   const dirty = new Set(); let saveTimer = null;
   function save(...keys) {
@@ -172,17 +174,23 @@
   let storageWarned = false;
   function flush() {
     clearTimeout(saveTimer);
+    if (!dirty.size) return;
     dirty.forEach((k) => {
-      try { localStorage.setItem(NS + k, JSON.stringify(S[k])); } catch (e) {
-        if (!storageWarned) { storageWarned = true; toast('Could not save', 'Browser storage is full or unavailable — changes may be lost on refresh.', 'err'); }
+      try { Store.set(NS + k, JSON.stringify(S[k])); } catch (e) {
+        if (!storageWarned) { storageWarned = true; toast('Could not save', 'Device storage is full or unavailable — recent changes may not be kept.', 'err'); }
       }
     });
     dirty.clear();
+    scheduleSync();
   }
   window.addEventListener('pagehide', flush);
-  window.addEventListener('beforeunload', flush);
+  // Reloads the app without writing the in-memory state back (after a reset or restore).
+  function reloadClean() {
+    dirty.clear(); clearTimeout(saveTimer); window.removeEventListener('pagehide', flush);
+    Store.flushed().then(() => location.reload());
+  }
 
-  const ui = { screen: S.ui.screen || 'home', filters: { priority: '', category: '', status: '' }, search: '', calCursor: new Date(), calSelected: dayKey(new Date()), statRange: 'week', editingWidgets: false, editApps: false, charts: {} };
+  const ui = { screen: S.ui.screen || 'home', filters: { priority: '', category: '', status: '' }, search: '', calCursor: new Date(), calSelected: dayKey(new Date()), statRange: 'week', editingWidgets: false, charts: {} };
 
   /* ============ 3. UI primitives ============ */
   function toast(title, msg = '', kind = '', opts = {}) {
@@ -288,12 +296,15 @@
     save('tasks'); checkAchievements(); renderAll();
   }
   function clearSentFor(id) { Object.keys(S.sent).forEach((k) => { if (k.includes(':' + id + ':')) delete S.sent[k]; }); save('sent'); }
-  function setStatus(t, status) {
-    const now = Date.now();
+  function setStatus(t, status, opts = {}) {
+    const now = opts.at || Date.now();
     if (status === 'completed') {
-      stopWork(t, now, true); t.status = 'completed'; t.completedAt = now; buzz(30);
+      stopWork(t, now, true); t.status = 'completed'; t.completedAt = now;
       t.subtasks.forEach((s) => (s.done = true));
-      toast('Task completed', t.title, 'ok', { actions: [{ label: 'Undo', fn: () => { t.status = 'pending'; t.completedAt = null; save('tasks'); renderAll(); } }] });
+      if (!opts.quiet) {
+        buzz(30);
+        toast('Task completed', t.title, 'ok', { actions: [{ label: 'Undo', fn: () => { t.status = 'pending'; t.completedAt = null; save('tasks'); renderAll(); } }] });
+      }
     } else { t.status = status; t.completedAt = null; }
     save('tasks'); checkAchievements(); renderAll();
   }
@@ -541,20 +552,21 @@
     breakDone: ['Break completed', 'i-moon'], screenBreak: ['Screen Break Reminders', 'i-eye'], daily: ['Daily productivity reminder', 'i-tasks'], achievements: ['Achievements & goals', 'i-trophy'],
   };
   const DND_BYPASS = ['pomodoro', 'breakDone', 'screenBreak'];
-  const notifSupported = 'Notification' in window;
-  const notifPerm = () => (notifSupported ? Notification.permission : 'unsupported');
+  // System permission state, refreshed from the device on start and whenever the app returns.
+  let devStatus = { notifications: Device.isNative ? 'prompt' : 'unavailable', exactAlarms: true, dndAccess: false, dndActive: false };
+  async function refreshDeviceStatus() { devStatus = await Device.status(); return devStatus; }
+  const notifPerm = () => devStatus.notifications;
 
+  // In-app alert + history. System notifications are posted by the device layer while Cadence is
+  // in the background, so nothing is shown twice.
   function notify(cat, title, body = '', opts = {}) {
     if (!S.settings.notifications.categories[cat]) return;
     const n = { id: uid(), ts: Date.now(), cat, title, body, read: false };
     S.notifs.unshift(n); S.notifs = S.notifs.slice(0, 150); save('notifs'); updateBell();
-    const held = dndActive() && !DND_BYPASS.includes(cat);
-    if (held) return; // simulated DND: held silently in history
+    if (dndActive() && !DND_BYPASS.includes(cat)) return; // focusing with Do Not Disturb: kept quietly in history
+    if (document.visibilityState === 'hidden') return;
     const sounds = S.settings.general.sounds && S.settings.notifications.sound;
     if (sounds && !opts.silent) CadenceAudio.chime(opts.soundKind || 'notify', S.settings.general.chimeVolume);
-    if (document.visibilityState === 'hidden' && notifPerm() === 'granted') {
-      try { const sys = new Notification(title, { body, tag: opts.tag || n.id, silent: true }); sys.onclick = () => { window.focus(); sys.close(); if (opts.onClick) opts.onClick(); }; return; } catch (e) { /* fall through to in-app */ }
-    }
     if (opts.noToast) return;
     toast(title, body, cat === 'overdue' ? 'err' : '', { actions: opts.actions });
   }
@@ -567,10 +579,11 @@
   }
   function closeDrawer() { $('#notifDrawer').hidden = true; $('#scrim').hidden = true; }
   function renderNotifs() {
-    const p = notifPerm();
-    $('#notifPermissionNote').innerHTML = p === 'granted' ? 'System notifications are on while Cadence is in the background. Delivery when the tab is closed or the browser is suspended is not guaranteed.'
-      : p === 'unsupported' ? 'This browser does not support system notifications, so alerts appear inside Cadence.'
-      : `System notifications are ${p === 'denied' ? 'blocked' : 'off'} — alerts appear inside Cadence. ${p !== 'denied' ? '<button class="widget-link" data-action="askNotif">Enable</button>' : ''}`;
+    const p = notifPerm(); const note = $('#notifPermissionNote');
+    note.innerHTML = p === 'prompt' ? 'Allow notifications so reminders and session alerts reach you when Cadence is closed. <button class="widget-link" data-action="askNotif">Allow</button>'
+      : p === 'denied' ? 'Notifications are turned off for Cadence, so alerts only appear while the app is open. <button class="widget-link" data-action="openNotifSettings">Turn on</button>'
+      : '';
+    note.hidden = !note.innerHTML;
     $('#notifList').innerHTML = S.notifs.length ? S.notifs.map((n) => `
       <div class="notif ${n.read ? 'read' : 'unread'}" data-action="readNotif" data-id="${n.id}">
         <div class="ic">${icon((NOTIF_CATS[n.cat] || ['', 'i-bell'])[1])}</div>
@@ -578,36 +591,56 @@
         <button class="icon-btn sm" data-action="delNotif" data-id="${n.id}" aria-label="Remove">${icon('i-x')}</button>
       </div>`).join('') : emptyState('i-bell', 'All caught up', 'Reminders and session alerts will appear here.');
   }
-  async function askNotifPermission() {
-    if (!notifSupported) { toast('Not supported', 'This browser has no Notifications API — in-app alerts will be used.', 'err'); return; }
-    try { const r = await Notification.requestPermission(); toast(r === 'granted' ? 'Notifications enabled' : 'Notifications not allowed', r === 'granted' ? 'You will get system alerts while Cadence is in the background.' : 'Cadence will show in-app alerts instead.', r === 'granted' ? 'ok' : ''); }
-    catch (e) { toast('Could not request permission', 'In-app alerts will be used.', 'err'); }
+  async function askNotifPermission(silent) {
+    const before = notifPerm();
+    devStatus = await Device.requestNotifications();
+    const p = notifPerm();
+    if (silent !== true && p !== before) toast(p === 'granted' ? 'Notifications on' : 'Notifications off', p === 'granted' ? 'Reminders and session alerts will reach you when Cadence is closed.' : 'Alerts will only appear while Cadence is open.', p === 'granted' ? 'ok' : '');
     renderAll(); if (!$('#notifDrawer').hidden) renderNotifs();
   }
 
   function onceKey(k) { if (S.sent[k]) return false; S.sent[k] = Date.now(); save('sent'); return true; }
+  // Every reminder a task can produce. `title`/`body` take the time the alert is shown, so the
+  // same plan drives in-app alerts and the notifications scheduled on the device.
+  function taskReminders(t) {
+    const ns = S.settings.notifications; const out = [];
+    if (t.status === 'completed') return out;
+    if (isScheduled(t)) {
+      const st = tms(t.start), en = tms(t.end);
+      if (t.reminder.start != null && t.reminder.start > 0) {
+        const lead = t.reminder.start;
+        out.push({ key: `up:${t.id}:${t.start}`, cat: 'upcoming', at: st - lead * MIN, until: st,
+          title: (now) => `Starting ${lead >= 60 ? 'in ' + fmtDur(st - now) : 'in ' + Math.max(1, Math.round((st - now) / MIN)) + ' min'}`,
+          body: (now) => `${t.title} · ${fmtRange(t.start, t.end, now)}` });
+      }
+      if (t.reminder.start != null) {
+        out.push({ key: `st:${t.id}:${t.start}`, cat: 'start', at: st, until: Math.min(en, st + 30 * MIN), title: () => 'Task starting now', body: () => t.title,
+          actions: [{ label: 'Start Focus Mode', fn: () => openFocusSetup(t.id) }, { label: 'Open task', fn: () => openTaskForm(t.id) }] });
+      }
+      if (t.reminder.end) {
+        if (ns.endLead > 0) out.push({ key: `en:${t.id}:${t.end}`, cat: 'endApproach', at: Math.max(en - ns.endLead * MIN, st + 1), until: en,
+          title: (now) => `Ending in ${Math.max(1, Math.round((en - now) / MIN))} min`, body: () => `${t.title} is scheduled to end at ${fmtTime(en)}.` });
+        out.push({ key: `ep:${t.id}:${t.end}`, cat: 'endApproach', at: en, until: en + 2 * HOUR, title: () => 'Scheduled time has ended',
+          body: () => `${t.title} — mark it done, or keep working (it won't be completed automatically).`,
+          actions: [{ label: 'Mark done', fn: () => setStatus(t, 'completed') }, { label: 'Postpone', fn: () => openPostpone(t.id) }] });
+      }
+    }
+    if (t.due) {
+      const du = tms(t.due);
+      out.push({ key: `dl:${t.id}:${t.due}`, cat: 'deadline', at: du - S.settings.notifications.deadlineLead * MIN, until: du,
+        title: (now) => `Due ${fmtDur(du - now) === '0m' ? 'now' : 'in ' + fmtDur(du - now)}`, body: () => t.title });
+    }
+    return out;
+  }
+  function dailyAt(day) { const [hh, mm] = (S.settings.notifications.dailyTime || '09:00').split(':').map(Number); const at = startOfDay(day); at.setHours(hh || 0, mm || 0); return at.getTime(); }
+  function dailyBody(day) {
+    const n = S.tasks.filter((t) => t.status !== 'completed' && touchesDay(t, day)).length;
+    return n ? `You have ${n} task${n > 1 ? 's' : ''} today. Pick one to start with.` : 'No tasks scheduled today yet — add one to set your intention.';
+  }
   function checkReminders() {
-    const now = Date.now(); const ns = S.settings.notifications; let overdueBatch = [];
+    const now = Date.now(); const overdueBatch = [];
     S.tasks.forEach((t) => {
-      if (t.status === 'completed') return;
-      if (isScheduled(t)) {
-        const st = tms(t.start), en = tms(t.end);
-        if (t.reminder.start != null && t.reminder.start > 0) {
-          const at = st - t.reminder.start * MIN;
-          if (now >= at && now < st && onceKey(`up:${t.id}:${t.start}`)) notify('upcoming', `Starting ${t.reminder.start >= 60 ? 'in ' + fmtDur(st - now) : 'in ' + Math.max(1, Math.round((st - now) / MIN)) + ' min'}`, `${t.title} · ${fmtRange(t.start, t.end)}`);
-        }
-        if (t.reminder.start != null && now >= st && now < Math.min(en, st + 30 * MIN) && onceKey(`st:${t.id}:${t.start}`)) {
-          notify('start', 'Task starting now', t.title, { actions: [{ label: 'Start Focus Mode', fn: () => openFocusSetup(t.id) }, { label: 'Open task', fn: () => openTaskForm(t.id) }] });
-        }
-        if (t.reminder.end) {
-          if (ns.endLead > 0 && now >= en - ns.endLead * MIN && now < en && now > st && onceKey(`en:${t.id}:${t.end}`)) notify('endApproach', `Ending in ${Math.max(1, Math.round((en - now) / MIN))} min`, `${t.title} is scheduled to end at ${fmtTime(en)}.`);
-          if (now >= en && now < en + 2 * HOUR && onceKey(`ep:${t.id}:${t.end}`)) notify('endApproach', 'Scheduled time has ended', `${t.title} — mark it done, or keep working (it won't be completed automatically).`, { actions: [{ label: 'Mark done', fn: () => setStatus(t, 'completed') }, { label: 'Postpone', fn: () => openPostpone(t.id) }] });
-        }
-      }
-      if (t.due) {
-        const du = tms(t.due);
-        if (now >= du - ns.deadlineLead * MIN && now < du && onceKey(`dl:${t.id}:${t.due}`)) notify('deadline', `Due ${fmtDur(du - now) === '0m' ? 'now' : 'in ' + fmtDur(du - now)}`, t.title);
-      }
+      taskReminders(t).forEach((r) => { if (now >= r.at && now < r.until && onceKey(r.key)) notify(r.cat, r.title(now), r.body(now), { actions: r.actions }); });
       if (isOverdue(t, now) && !S.sent[`od:${t.id}:${t.due || t.end}`]) { S.sent[`od:${t.id}:${t.due || t.end}`] = now; overdueBatch.push(t); }
     });
     if (overdueBatch.length) {
@@ -616,14 +649,31 @@
       else notify('overdue', `${overdueBatch.length} tasks are overdue`, overdueBatch.slice(0, 3).map((t) => t.title).join(', ') + (overdueBatch.length > 3 ? '…' : ''), { actions: [{ label: 'Review', fn: () => { S.ui.taskView = 'overdue'; go('tasks'); } }] });
     }
     // daily productivity reminder
-    const [hh, mm] = (ns.dailyTime || '09:00').split(':').map(Number); const at = startOfDay(new Date()); at.setHours(hh || 0, mm || 0);
-    if (now >= at.getTime() && now < at.getTime() + 3 * HOUR && onceKey('daily:' + dayKey(now))) {
-      const today = S.tasks.filter((t) => t.status !== 'completed' && touchesDay(t, new Date())).length;
-      notify('daily', 'Plan your day', today ? `You have ${today} task${today > 1 ? 's' : ''} today. Pick one to start with.` : 'No tasks scheduled today yet — add one to set your intention.');
-    }
+    const at = dailyAt(new Date());
+    if (now >= at && now < at + 3 * HOUR && onceKey('daily:' + dayKey(now))) notify('daily', 'Plan your day', dailyBody(new Date()));
     // prune old sent keys
     const cutoff = now - 30 * DAY; let pruned = false;
     Object.keys(S.sent).forEach((k) => { if (S.sent[k] < cutoff) { delete S.sent[k]; pruned = true; } }); if (pruned) save('sent');
+  }
+  // The coming week's reminders, handed to the device so they fire while Cadence is closed.
+  function scheduledReminders(now) {
+    const cats = S.settings.notifications.categories; const horizon = now + 8 * DAY; const out = [];
+    S.tasks.forEach((t) => {
+      taskReminders(t).forEach((r) => {
+        if (cats[r.cat] && r.at > now && r.at < horizon && !S.sent[r.key]) out.push({ key: r.key, cat: r.cat, at: Math.round(r.at), title: r.title(r.at), body: r.body(r.at), taskId: t.id });
+      });
+      const k = `od:${t.id}:${t.due}`;
+      if (cats.overdue && t.status !== 'completed' && t.due && tms(t.due) > now && tms(t.due) < horizon && !S.sent[k]) {
+        out.push({ key: k, cat: 'overdue', at: tms(t.due) + 1000, title: 'Task overdue', body: `${t.title} was due at ${fmtTime(t.due)}.`, taskId: t.id });
+      }
+    });
+    if (cats.daily) {
+      [0, 1].forEach((i) => {
+        const day = addDays(new Date(now), i); const at = dailyAt(day); const k = 'daily:' + dayKey(day);
+        if (at > now && !S.sent[k]) out.push({ key: k, cat: 'daily', at, title: 'Plan your day', body: dailyBody(day) });
+      });
+    }
+    return out.sort((a, b) => a.at - b.at).slice(0, 200);
   }
 
   /* ============ 7. Pomodoro timer & Focus Mode ============ */
@@ -643,7 +693,6 @@
   const timerTask = () => (S.timer.taskId ? getTask(S.timer.taskId) : null);
   const restrictionsActive = () => S.focus.active && S.timer.phase === 'focus' && S.timer.status !== 'idle';
   const dndActive = () => restrictionsActive() && S.focus.dnd;
-  const appAccessible = (id) => !restrictionsActive() || !!S.focus.apps[id];
 
   function startTimer(at = Date.now()) {
     const t = S.timer; t.total = phaseTotal(t.phase); t.endAt = at + t.total; t.status = 'running'; t.phaseStartedAt = at; t.awaiting = null;
@@ -651,16 +700,16 @@
     else musicForPhase('break');
     save('timer'); renderLive(true);
   }
-  function pauseTimer() {
+  function pauseTimer(at = Date.now()) {
     const t = S.timer; if (t.status !== 'running') return;
-    t.remaining = Math.max(0, t.endAt - Date.now()); t.status = 'paused';
-    if (t.phase === 'focus') stopWork(timerTask(), Date.now(), false, 'timer');
+    t.remaining = Math.max(0, t.endAt - at); t.status = 'paused';
+    if (t.phase === 'focus') stopWork(timerTask(), at, false, 'timer');
     save('timer'); renderLive(true);
   }
-  function resumeTimer() {
+  function resumeTimer(at = Date.now()) {
     const t = S.timer; if (t.status !== 'paused') return;
-    t.endAt = Date.now() + t.remaining; t.status = 'running';
-    if (t.phase === 'focus' && S.settings.focusMode.trackWork) startWork(timerTask(), 'timer');
+    t.endAt = at + t.remaining; t.status = 'running';
+    if (t.phase === 'focus' && S.settings.focusMode.trackWork) startWork(timerTask(), 'timer', at);
     save('timer'); renderLive(true);
   }
   function recordSession(type, ms, at, completed) {
@@ -668,7 +717,7 @@
     if (type === 'focus') { const tk = timerTask(); if (tk) { tk.focusMs += ms; save('tasks'); } }
     save('sessions');
   }
-  function elapsedMs() { const t = S.timer; return t.status === 'idle' ? 0 : t.total - remaining(); }
+  function elapsedMs(now = Date.now()) { const t = S.timer; return t.status === 'idle' ? 0 : t.total - remaining(now); }
   function resetTimer(silent) {
     const t = S.timer; const el = elapsedMs();
     if (t.phase === 'focus' && t.status !== 'idle' && el >= MIN) recordSession('focus', el, Date.now(), false);
@@ -677,11 +726,11 @@
     if (!silent && el >= MIN && t.phase === 'focus') toast('Session reset', `${fmtDur(el)} of focus time was still counted.`);
   }
   function setPhase(phase) { if (S.timer.status !== 'idle') resetTimer(true); S.timer.phase = phase; save('timer'); renderLive(true); }
-  function skipPhase() {
+  function skipPhase(at = Date.now()) {
     const t = S.timer;
     if (t.phase === 'focus') {
-      const el = elapsedMs(); if (el >= MIN) recordSession('focus', el, Date.now(), false);
-      stopWork(timerTask(), Date.now(), false, 'timer');
+      const el = elapsedMs(at); if (el >= MIN) recordSession('focus', el, at, false);
+      stopWork(timerTask(), at, false, 'timer');
       t.phase = (t.cycle + 1) % S.settings.pomodoro.interval === 0 ? 'long' : 'short'; t.status = 'idle';
       save('timer'); renderLive(true); promptBreak();
     } else {
@@ -691,25 +740,28 @@
     }
   }
   function completePhase(at) {
-    const t = S.timer; const phase = t.phase; const sounds = S.settings.general.sounds && S.settings.general.timerSound;
+    const t = S.timer; const phase = t.phase;
+    // A phase that ended while Cadence was closed was already announced by a system notification.
+    const live = Date.now() - at < MIN && document.visibilityState === 'visible';
+    const sounds = live && S.settings.general.sounds && S.settings.general.timerSound;
     if (phase === 'focus') {
       recordSession('focus', t.total, at, true);
       stopWork(timerTask(), at, false, 'timer');
       t.cycle = (t.cycle || 0) + 1;
       const next = t.cycle % S.settings.pomodoro.interval === 0 ? 'long' : 'short';
       const tk = timerTask();
-      notify('pomodoro', 'Focus session complete', `${tk ? tk.title + ' · ' : ''}${fmtDur(t.total)} focused. Time for a ${next === 'long' ? 'long' : 'short'} break.`, { silent: true });
+      notify('pomodoro', 'Focus session complete', `${tk ? tk.title + ' · ' : ''}${fmtDur(t.total)} focused. Time for a ${next === 'long' ? 'long' : 'short'} break.`, { silent: true, noToast: !live });
       if (sounds) CadenceAudio.chime('focusEnd', S.settings.general.chimeVolume);
-      buzz([180, 90, 180]);
+      if (live) buzz([180, 90, 180]);
       t.phase = next; t.status = 'idle';
-      if (S.settings.pomodoro.autoTransition) { startTimer(at); breakToast(); }
+      if (S.settings.pomodoro.autoTransition) { startTimer(at); if (live) breakToast(); }
       else { t.awaiting = 'break'; save('timer'); promptBreak(); }
     } else {
       recordSession(phase, t.total, at, true);
       if (phase === 'long') t.cycle = 0;
-      notify('breakDone', 'Break finished', S.focus.active ? 'Ready to resume Focus Mode?' : 'Ready for another focus session?', { silent: true });
+      notify('breakDone', 'Break finished', S.focus.active ? 'Ready to resume Focus Mode?' : 'Ready for another focus session?', { silent: true, noToast: !live });
       if (sounds) CadenceAudio.chime('breakEnd', S.settings.general.chimeVolume);
-      buzz([120, 80, 120]);
+      if (live) buzz([120, 80, 120]);
       t.phase = 'focus'; t.status = 'idle'; t.awaiting = 'focus'; save('timer');
       promptNextFocus();
     }
@@ -717,7 +769,7 @@
   }
   function randomSuggestion() { const l = S.settings.breakSuggestions; return l.length ? l[Math.floor(Math.random() * l.length)] : 'Take a moment to rest.'; }
   function breakToast() {
-    toast(`${PHASE_LABEL[S.timer.phase]} started`, `${randomSuggestion()}${S.focus.active ? ' DND is off and all apps are accessible (simulated).' : ''}`, 'ok', { actions: [{ label: 'Skip break', fn: skipPhase }] });
+    toast(`${PHASE_LABEL[S.timer.phase]} started`, `${randomSuggestion()}${S.focus.active && S.focus.dnd ? ' Do Not Disturb is off for the break.' : ''}`, 'ok', { actions: [{ label: 'Skip break', fn: () => skipPhase() }] });
   }
   async function promptBreak() {
     const ph = S.timer.phase; const len = fmtDur(phaseTotal(ph));
@@ -735,7 +787,7 @@
       : [{ label: 'Not now', value: 'no' }, { label: 'Focus Mode…', value: 'setup' }, { label: 'Start focus session', value: 'start', kind: 'btn-primary' }];
     const tk = timerTask();
     const v = await choiceDialog({ id: 'prompt', title: 'Break is over', message: fm
-      ? `<p>Resume Focus Mode with your previous settings?</p><p class="small muted" style="margin-top:6px">${tk ? esc(tk.title) + ' · ' : ''}${S.focus.duration} min · DND ${S.focus.dnd ? 'on' : 'off'} · ${APPS.filter((a) => S.focus.apps[a.id]).length} apps accessible</p>`
+      ? `<p>Resume Focus Mode with your previous settings?</p><p class="small muted" style="margin-top:6px">${tk ? esc(tk.title) + ' · ' : ''}${S.focus.duration} min · Do Not Disturb ${S.focus.dnd ? 'on' : 'off'}</p>`
       : '<p>Want to start another focus session?</p>', choices });
     if (S.timer.status !== 'idle') return;
     S.timer.awaiting = null; save('timer');
@@ -756,21 +808,22 @@
 
   function openFocusSetup(taskId, isResume) {
     const editing = S.focus.active && S.timer.status !== 'idle';
-    const cfg = S.focus.active ? clone(S.focus) : { taskId: taskId || S.timer.taskId || null, duration: S.settings.focusMode.defaultDuration, music: S.settings.music.category, dnd: S.settings.focusMode.dnd, apps: clone(S.focus.apps || S.settings.focusMode.apps) };
+    const cfg = S.focus.active ? clone(S.focus) : { taskId: taskId || S.timer.taskId || null, duration: S.settings.focusMode.defaultDuration, music: S.settings.music.category, dnd: S.settings.focusMode.dnd, allow: clone(S.focus.allow || S.settings.focusMode.allow) };
     if (taskId) cfg.taskId = taskId;
     const open = S.tasks.filter((t) => t.status !== 'completed');
     const musicOpts = [['none', 'No music']].concat(CadenceAudio.library.map((c) => [c.id, c.name]));
     const body = `
-      <div class="sim-note">${icon('i-lock')}<div>Do Not Disturb and app access are <b>simulated inside Cadence</b>. A web app can't change your phone's DND or block other installed apps.</div></div>
       <label class="field"><span>1. Task</span><select class="select" name="task"><option value="">No specific task</option>${open.map((t) => `<option value="${t.id}" ${cfg.taskId === t.id ? 'selected' : ''}>${esc(t.title)}</option>`).join('')}</select></label>
       <div class="field"><span class="field-label">2. Focus duration</span>
         <div class="row wrap"><div class="pill-group" id="durPills">${[15, 25, 45, 50, 60, 90].map((m) => `<button type="button" class="pill" data-dur="${m}" aria-pressed="${cfg.duration === m}">${m} min</button>`).join('')}</div>
         <input class="input" type="number" min="1" max="240" name="duration" value="${cfg.duration}" style="width:96px" aria-label="Custom minutes"></div>
         ${editing ? '<span class="field-hint">Changing the duration adjusts the session that is running now.</span>' : ''}</div>
       <label class="field"><span>3. Background music</span><select class="select" name="music">${musicOpts.map(([v, l]) => `<option value="${v}" ${cfg.music === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-      <div class="set-row" style="padding:4px 0;border:0"><div class="lbl"><b>4. Do Not Disturb (simulated)</b><span>Holds non-essential Cadence alerts in your notification history during focus.</span></div><div class="ctl">${sw('name="dnd"', cfg.dnd)}</div></div>
-      <div class="field"><span class="field-label">5. Apps that stay accessible</span>
-        <div class="app-toggle-list">${APPS.map((a) => `<label class="app-toggle"><input type="checkbox" name="app" value="${a.id}" ${cfg.apps[a.id] ? 'checked' : ''}>${icon(a.icon)}${a.name}</label>`).join('')}</div></div>`;
+      <div class="set-row" style="padding:4px 0;border:0"><div class="lbl"><b>4. Do Not Disturb</b><span>Silences your phone while you focus and turns off again for breaks.</span></div><div class="ctl">${sw('name="dnd"', cfg.dnd)}</div></div>
+      ${dndAccessNote()}
+      <div class="field"><span class="field-label">5. Still allowed during focus</span>
+        <div class="app-toggle-list">${DND_ALLOW.map((a) => `<label class="app-toggle"><input type="checkbox" name="allow" value="${a.id}" ${cfg.allow[a.id] ? 'checked' : ''}>${icon(a.icon)}${a.name}</label>`).join('')}</div>
+        <span class="field-hint">Alarms and media always play.</span></div>`;
     const m = openModal({ title: editing ? 'Focus settings' : isResume ? 'Next focus session' : 'Set up Focus Mode', body, id: 'focus-setup',
       foot: `<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-go>${editing ? 'Apply changes' : icon('i-play') + 'Start focusing'}</button>` });
     const durIn = m.el.querySelector('[name=duration]');
@@ -778,8 +831,8 @@
     durIn.addEventListener('input', () => $$('[data-dur]', m.el).forEach((x) => x.setAttribute('aria-pressed', x.dataset.dur === durIn.value)));
     m.el.querySelector('[data-go]').onclick = () => {
       const dur = clamp(Math.round(+durIn.value || 25), 1, 240);
-      const apps = {}; APPS.forEach((a) => { apps[a.id] = !!m.el.querySelector(`[name=app][value=${a.id}]`).checked; });
-      const next = { taskId: m.el.querySelector('[name=task]').value || null, duration: dur, music: m.el.querySelector('[name=music]').value, dnd: m.el.querySelector('[name=dnd]').checked, apps };
+      const allow = {}; DND_ALLOW.forEach((a) => { allow[a.id] = !!m.el.querySelector(`[name=allow][value=${a.id}]`).checked; });
+      const next = { taskId: m.el.querySelector('[name=task]').value || null, duration: dur, music: m.el.querySelector('[name=music]').value, dnd: m.el.querySelector('[name=dnd]').checked, allow };
       m.close(true);
       if (editing) applyFocusChanges(next); else startFocusMode(next);
     };
@@ -788,18 +841,24 @@
     if (S.timer.status !== 'idle') resetTimer(true);
     if (S.timer.taskId && S.timer.taskId !== cfg.taskId) stopWork(timerTask(), Date.now(), false, 'timer');
     Object.assign(S.focus, cfg, { active: true, startedAt: Date.now(), resumeAfterBreak: true });
-    S.settings.focusMode.apps = clone(cfg.apps); save('settings');
+    S.settings.focusMode.allow = clone(cfg.allow); save('settings');
     S.timer.taskId = cfg.taskId; S.timer.phase = 'focus';
     save('focus'); startTimer();
     go('focus');
-    toast('Focus Mode on', `${cfg.duration} min${cfg.dnd ? ' · DND on (simulated)' : ''}`, 'ok');
+    if (cfg.dnd && Device.isNative && !devStatus.dndAccess) {
+      toast('Focus Mode on', 'Allow Do Not Disturb access so Cadence can silence your phone while you focus.', 'ok', { actions: [{ label: 'Allow', fn: () => Device.openSettings('dnd') }] });
+    } else toast('Focus Mode on', `${cfg.duration} min${cfg.dnd ? ' · Do Not Disturb on' : ''}`, 'ok');
+  }
+  function dndAccessNote() {
+    if (!Device.isNative || devStatus.dndAccess) return '';
+    return `<div class="info-note">${icon('i-moon')}<div>To switch Do Not Disturb on for you, Cadence needs access in system settings. <button type="button" class="widget-link" data-action="dndAccess">Allow access</button></div></div>`;
   }
   function applyFocusChanges(cfg) {
     const t = S.timer; const prevTask = t.taskId;
     if (prevTask !== cfg.taskId && t.phase === 'focus') { stopWork(timerTask(), Date.now(), false, 'timer'); t.taskId = cfg.taskId; if (t.status === 'running' && S.settings.focusMode.trackWork) startWork(timerTask(), 'timer'); }
     const durChanged = cfg.duration !== S.focus.duration;
     const musicChanged = cfg.music !== S.focus.music;
-    Object.assign(S.focus, cfg); S.settings.focusMode.apps = clone(cfg.apps);
+    Object.assign(S.focus, cfg); S.settings.focusMode.allow = clone(cfg.allow);
     if (durChanged && t.phase === 'focus' && t.status !== 'idle') {
       const el = elapsedMs(); t.total = cfg.duration * MIN;
       if (t.status === 'running') t.endAt = Date.now() + Math.max(0, t.total - el); else t.remaining = Math.max(0, t.total - el);
@@ -816,7 +875,7 @@
     const focusMs = S.sessions.filter((s) => s.type === 'focus' && s.end >= S.focus.startedAt).reduce((a, s) => a + s.ms, 0) + (S.timer.phase === 'focus' ? elapsedMs() : 0);
     resetTimer(true); S.timer.phase = 'focus'; S.focus.active = false; save('focus', 'timer');
     if (S.settings.music.pauseOnBreak && CadenceAudio.playing) CadenceAudio.pause();
-    renderAll(); toast('Focus Mode ended', `Total this run: ${fmtDur(focusMs)}. All apps accessible again.`, 'ok');
+    renderAll(); toast('Focus Mode ended', `Total this run: ${fmtDur(focusMs)}.`, 'ok');
   }
 
   /* --- timer display helpers --- */
@@ -855,7 +914,6 @@
       $$('.js-t-dots').forEach((e) => (e.innerHTML = dotsHTML()));
       if (force) { if (ui.screen === 'focus') renderFocus(); if (ui.screen === 'home') renderActiveCard(); }
     }
-    document.title = t.status === 'running' ? `${fmtClock(rem)} · ${PHASE_LABEL[t.phase]} — Cadence` : 'Cadence — Focus & Productivity';
     const ac = $('.js-active-time'); if (ac) ac.textContent = fmtClock(rem);
   }
 
@@ -863,6 +921,7 @@
   let eyeTimerId = null;
   function eyeEligible() {
     const mode = S.settings.screenBreak.applyTo; const visible = document.visibilityState === 'visible';
+    if (Device.isNative && !visible) return false; // the device sends screen-break notifications instead
     const focusing = S.timer.status === 'running' && S.timer.phase === 'focus';
     if (mode === 'focus') return focusing;
     if (mode === 'general') return visible && !focusing;
@@ -883,7 +942,7 @@
     if (cfg.pauseTimer && S.timer.status === 'running') { pauseTimer(); e.active.pausedTimer = true; }
     buzz(250);
     save('eye');
-    notify('screenBreak', 'Screen break', `Look at something about 20 feet away for ${cfg.duration >= 60 ? fmtDur(cfg.duration * 1000) : cfg.duration + ' seconds'}.`, { soundKind: 'screen', tag: 'cadence-eye', noToast: true });
+    notify('screenBreak', 'Screen break', `Look at something about 20 feet away for ${cfg.duration >= 60 ? fmtDur(cfg.duration * 1000) : cfg.duration + ' seconds'}.`, { soundKind: 'screen', noToast: true });
     showEyeOverlay();
   }
   function endEye(action, extra = {}) {
@@ -949,7 +1008,7 @@
   }
   async function playTrack(id) {
     const ok = await CadenceAudio.play(id);
-    if (!ok) { toast('Audio unavailable', 'This browser does not support the Web Audio API.', 'err'); return; }
+    if (!ok) { toast('Audio unavailable', 'Music could not start on this device.', 'err'); return; }
     S.music.trackId = id; save('music'); renderMusic();
   }
   function playCategory(cat) {
@@ -973,7 +1032,7 @@
   }
   CadenceAudio.on((ev) => {
     if (ev.type === 'ended') { if (S.music.repeat) playTrack(ev.track.id); else musicStep(1); }
-    else renderMusic();
+    else { renderMusic(); scheduleSync(); }
   });
   function toggleFav(id) {
     const f = S.music.favorites; const i = f.indexOf(id); if (i >= 0) f.splice(i, 1); else f.push(id);
@@ -984,7 +1043,7 @@
     const playing = CadenceAudio.playing; const cat = S.music.category;
     const list = musicList(cat);
     const cats = [['fav', '♥ Favorites']].concat(CadenceAudio.library.map((c) => [c.id, c.name]));
-    if (!CadenceAudio.supported) return emptyState('i-music', 'Audio not supported', 'This browser lacks the Web Audio API, so focus music is unavailable.');
+    if (!CadenceAudio.supported) return emptyState('i-music', 'Audio not available', 'Focus music is not available on this device.');
     return `<div class="player">
       <div class="player-now">
         <div class="art ${playing ? 'playing' : ''}" style="background:${CAT_ART[cur ? cur.category : cat] || CAT_ART.lofi}">${icon('i-music')}</div>
@@ -1003,7 +1062,7 @@
       ${compact ? `<label class="field"><span class="sr-only">Category</span><select class="select" data-action-change="musicCat">${cats.map(([v, l]) => `<option value="${v}" ${cat === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`
         : `<div class="cat-scroll">${cats.map(([v, l]) => `<button class="pill" data-action="musicCat" data-id="${v}" aria-pressed="${cat === v}">${l}</button>`).join('')}</div>
       <div class="track-list">${list.length ? list.map((t) => `<button class="track ${cur && cur.id === t.id ? 'active' : ''}" data-action="musicPlay" data-id="${t.id}"><span class="tn">${esc(t.title)}</span>${S.music.favorites.includes(t.id) ? `<span class="fav">${icon('i-heart-fill')}</span>` : ''}<span class="tl">${fmtSec(t.length)}</span></button>`).join('') : `<p class="small muted" style="padding:8px">No favorites yet — tap the heart on a track you like.</p>`}</div>`}
-      <p class="tiny muted">All tracks are generated live in your browser (Web Audio) — royalty-free and offline.</p>
+      <p class="tiny muted">All tracks are generated live on your device — royalty-free and offline. Music keeps playing when you leave the app.</p>
     </div>`;
   }
   function renderMusic() {
@@ -1171,7 +1230,7 @@
       return;
     }
     el.innerHTML = `<div class="active-inner ${t.phase !== 'focus' ? 'break' : ''}">
-      <div class="meta"><div class="t">${PHASE_LABEL[t.phase]}${t.status === 'paused' ? ' · paused' : ''}${S.focus.active ? ' · Focus Mode' : ''}</div><div class="s">${tk ? esc(tk.title) : 'No task selected'}${dndActive() ? ' · DND on (simulated)' : ''}</div></div>
+      <div class="meta"><div class="t">${PHASE_LABEL[t.phase]}${t.status === 'paused' ? ' · paused' : ''}${S.focus.active ? ' · Focus Mode' : ''}</div><div class="s">${tk ? esc(tk.title) : 'No task selected'}${dndActive() ? ' · Do Not Disturb on' : ''}</div></div>
       <div class="big js-active-time">${fmtClock(remaining())}</div>
       <button class="btn btn-sm btn-on-dark" data-action="${t.status === 'running' ? 'timerPause' : 'timerResume'}" aria-label="${t.status === 'running' ? 'Pause' : 'Resume'}">${icon(t.status === 'running' ? 'i-pause' : 'i-play')}</button>
       <button class="btn btn-sm btn-on-dark" data-action="openFocus">Open</button></div>`;
@@ -1293,36 +1352,33 @@
   /* --- focus screen --- */
   function renderFocus() {
     const t = S.timer; const tk = timerTask(); const fm = S.focus.active; const isBreak = t.phase !== 'focus';
-    const restr = restrictionsActive(); const dnd = dndActive();
+    const dnd = dndActive();
     $('#focusMain').innerHTML = `
       <div class="focus-status">
         <span class="chip ${fm ? 'chip-accent' : ''}">${fm ? '● Focus Mode on' : 'Focus Mode off'}</span>
         <span class="chip ${isBreak ? 'chip-warn' : ''}">${PHASE_LABEL[t.phase]}${t.status === 'paused' ? ' · paused' : t.status === 'idle' ? ' · ready' : ''}</span>
-        <span class="chip ${dnd ? 'chip-accent' : ''}">${icon('i-moon')}DND ${dnd ? 'on' : 'off'} <span class="muted">(simulated)</span></span>
+        <span class="chip ${dnd ? 'chip-accent' : ''}">${icon('i-moon')}Do Not Disturb ${dnd ? 'on' : 'off'}</span>
       </div>
       <div class="focus-task"><div class="k">Current task</div><div class="v">${tk ? esc(tk.title) : 'No task selected'}</div>${tk && (tk.focusMs || tk.actualMs) ? `<div class="small muted">${fmtDur(tk.focusMs)} focused on this task${tk.estimate ? ` · est. ${fmtDur(tk.estimate * MIN)}` : ''}</div>` : ''}</div>
       <div class="row" style="justify-content:center">${ringHTML(Math.min(260, Math.min(window.innerWidth, 480) - 90), 14)}</div>
       <div class="session-dots js-t-dots" aria-label="Sessions in this cycle"></div>
       <p class="small muted" style="text-align:center">Session ${(t.cycle % S.settings.pomodoro.interval) + (t.phase === 'focus' ? 1 : 0) || S.settings.pomodoro.interval} of ${S.settings.pomodoro.interval} · long break after every ${S.settings.pomodoro.interval} · ${sessionsBetween(startOfDay(new Date()).getTime(), Date.now() + 1)} completed today</p>
       <div class="timer-controls js-t-ctrl"></div>
-      ${isBreak && t.status !== 'idle' ? `<div class="break-suggest">${icon('i-moon')}<div><b>Break time — rest away from the screen</b>${esc(randomSuggestion())}${fm ? '<br><span class="small">DND is off and every app is accessible during the break (simulated).</span>' : ''}</div></div>` : ''}
+      ${isBreak && t.status !== 'idle' ? `<div class="break-suggest">${icon('i-moon')}<div><b>Break time — rest away from the screen</b>${esc(randomSuggestion())}${fm && S.focus.dnd ? '<br><span class="small">Do Not Disturb is off during the break.</span>' : ''}</div></div>` : ''}
       ${fm && isBreak ? `<div class="set-row" style="padding:0;border:0"><div class="lbl"><b>Resume Focus Mode after the break?</b><span>We will ask when the break ends; your previous settings are kept.</span></div><div class="ctl">${sw('data-action-change="resumeAfterBreak"', S.focus.resumeAfterBreak)}</div></div>` : ''}
       <div class="row wrap" style="justify-content:center">
         ${fm ? `<button class="btn btn-ghost" data-action="openFocusSetup">${icon('i-sliders')}Modify focus settings</button><button class="btn btn-danger-ghost" data-action="endFocus">End focus session</button>`
           : `<button class="btn btn-primary btn-lg" data-action="openFocusSetup">${icon('i-focus')}Set up Focus Mode</button>`}
       </div>
-      ${!fm ? '<p class="small muted" style="text-align:center">Focus Mode adds a task, music, simulated Do Not Disturb and app access rules on top of the Pomodoro timer. You can also just press Start to run a plain Pomodoro.</p>' : ''}`;
-    // simulated device
-    const allowed = APPS.filter((a) => S.focus.apps[a.id]).length;
+      ${!fm ? '<p class="small muted" style="text-align:center">Focus Mode adds a task, music and Do Not Disturb on top of the Pomodoro timer. You can also just press Start to run a plain Pomodoro.</p>' : ''}`;
+    const active = Device.isNative && devStatus.dndActive;
     $('#focusDevice').innerHTML = `
-      <div class="widget-head" style="margin-bottom:10px"><h3>${icon('i-apps')}App access ${restr ? '— restricted' : '— all accessible'}</h3><button class="widget-link" data-action="toggleEditApps">${ui.editApps ? 'Done' : 'Edit'}</button></div>
-      ${ui.editApps ? `<div class="app-toggle-list" style="margin-bottom:12px">${APPS.map((a) => `<label class="app-toggle"><input type="checkbox" data-action-change="appToggle" data-id="${a.id}" ${S.focus.apps[a.id] ? 'checked' : ''}>${icon(a.icon)}${a.name}</label>`).join('')}</div><p class="small muted" style="margin-bottom:12px">Checked apps stay accessible during focus. Changes apply immediately, even mid-session.</p>` : ''}
-      <div class="device" aria-label="Simulated phone">
-        <div class="device-status"><span class="num">${fmtTime(new Date())}</span><span class="ind">${dnd ? `<span class="dnd-pill">${icon('i-moon')}DND</span>` : '<span class="dnd-pill off">DND off</span>'}${restr ? `<span class="dnd-pill off">${icon('i-lock')}${allowed}/${APPS.length}</span>` : ''}</span></div>
-        <div class="app-grid">${APPS.map((a) => { const ok = appAccessible(a.id); return `<button class="sim-app ${ok ? '' : 'locked'}" data-action="simApp" data-id="${a.id}" aria-label="${a.name}: ${ok ? 'accessible' : 'restricted'}"><span class="ico" style="background:${a.color}">${icon(a.icon)}</span>${ok ? '' : `<span class="lock">${icon('i-lock')}</span>`}${a.name}</button>`; }).join('')}</div>
-        <div class="device-foot">${restr ? `${APPS.length - allowed} apps restricted until your break` : fm ? 'Break or idle: every app is accessible' : 'Focus Mode is off'}</div>
-      </div>
-      <div class="sim-note" style="margin-top:12px">${icon('i-lock')}<div><b>Simulation only.</b> Browsers cannot control your phone's Do Not Disturb or block other installed apps. A native build could use Android's Notification Policy Access, or iOS FamilyControls / ManagedSettings / DeviceActivity, with user permission.</div></div>`;
+      <div class="widget-head" style="margin-bottom:10px"><h3>${icon('i-moon')}Do Not Disturb</h3><span class="chip ${active ? 'chip-accent' : ''}">${active ? 'On' : 'Off'}</span></div>
+      <p class="small muted">${!S.focus.dnd && fm ? 'Off for this Focus Mode run. Turn it on in Modify focus settings.' : 'Turns on automatically during focus sessions and back off for breaks, so calls and notifications don’t pull you away.'}</p>
+      ${dndAccessNote()}
+      <div class="field" style="margin-top:12px"><span class="field-label">Still allowed during focus</span>
+        <div class="app-toggle-list">${DND_ALLOW.map((a) => `<label class="app-toggle"><input type="checkbox" data-action-change="allowToggle" data-id="${a.id}" ${S.focus.allow[a.id] ? 'checked' : ''}>${icon(a.icon)}${a.name}</label>`).join('')}</div>
+        <span class="field-hint">Alarms and media always play. Changes apply right away.</span></div>`;
     $('#focusMusicCard').innerHTML = `<div class="widget-head" style="margin-bottom:10px"><h3>${icon('i-music')}Focus music</h3></div><div class="js-music"></div>`;
     renderMusic(); lastCtrlSig = ''; renderLive(false);
   }
@@ -1424,14 +1480,14 @@
     { group: 'Personalize', id: 'appearance', title: 'Appearance', icon: 'i-moon', color: '#8364e8', sum: () => ({ system: 'Match device', light: 'Light', dark: 'Dark' }[S.settings.general.theme]) },
     { group: 'Personalize', id: 'general', title: 'General', icon: 'i-settings', color: '#6B6383', sum: () => `${S.settings.general.timeFormat}-hour · week starts ${['Sunday', 'Monday', '', '', '', '', 'Saturday'][S.settings.general.weekStart]} · sounds ${S.settings.general.sounds ? 'on' : 'off'}` },
     { group: 'Focus', id: 'pomodoro', title: 'Pomodoro timer', icon: 'i-clock', color: '#6A4BD8', sum: () => { const p = S.settings.pomodoro; return `${p.focus} / ${p.short} / ${p.long} min · long break every ${p.interval}`; } },
-    { group: 'Focus', id: 'focus', title: 'Focus Mode', icon: 'i-lock', color: '#9B6BE8', sum: () => `DND ${S.settings.focusMode.dnd ? 'on' : 'off'} · ${APPS.filter((a) => S.settings.focusMode.apps[a.id]).length} apps allowed` },
+    { group: 'Focus', id: 'focus', title: 'Focus Mode', icon: 'i-lock', color: '#9B6BE8', sum: () => `Do Not Disturb ${S.settings.focusMode.dnd ? 'on' : 'off'} · ${S.settings.focusMode.defaultDuration} min sessions` },
     { group: 'Focus', id: 'screen', title: 'Screen breaks', icon: 'i-eye', color: '#B06CE6', sum: () => S.settings.screenBreak.enabled ? `Every ${S.settings.screenBreak.interval} min · ${S.settings.screenBreak.duration >= 60 ? fmtDur(S.settings.screenBreak.duration * 1000) : S.settings.screenBreak.duration + ' s'}` : 'Off' },
     { group: 'Focus', id: 'breaks', title: 'Break suggestions', icon: 'i-quote', color: '#C784F2', sum: () => `${S.settings.breakSuggestions.length} ideas` },
     { group: 'Focus', id: 'music', title: 'Music', icon: 'i-music', color: '#d397fa', sum: () => { const c = CadenceAudio.library.find((x) => x.id === S.settings.music.category); return `${c ? c.name : ''} · ${Math.round(S.settings.music.volume * 100)}%`; } },
-    { group: 'Alerts & goals', id: 'notifications', title: 'Notifications', icon: 'i-bell', color: '#D6455D', sum: () => `${Object.values(S.settings.notifications.categories).filter(Boolean).length} of ${Object.keys(NOTIF_CATS).length} types on · system ${notifPerm() === 'granted' ? 'allowed' : notifPerm() === 'unsupported' ? 'unavailable' : 'off'}` },
+    { group: 'Alerts & goals', id: 'notifications', title: 'Notifications', icon: 'i-bell', color: '#D6455D', sum: () => `${Object.values(S.settings.notifications.categories).filter(Boolean).length} of ${Object.keys(NOTIF_CATS).length} types on${notifPerm() === 'granted' || notifPerm() === 'unavailable' ? '' : ' · blocked by system'}` },
     { group: 'Alerts & goals', id: 'goals', title: 'Goals', icon: 'i-trophy', color: '#D18F1F', sum: () => `${S.settings.goals.dailyFocusMin} min a day · ${S.settings.goals.weeklyFocusHours} h a week` },
     { group: 'Data', id: 'data', title: 'Data & storage', icon: 'i-grid', color: '#3FA07A', sum: () => `${S.tasks.length} tasks · ${S.sessions.length} sessions` },
-    { group: 'Data', id: 'about', title: 'About Cadence', icon: 'i-focus', color: '#5E3FD0', sum: () => 'Install, limitations, privacy' },
+    { group: 'Data', id: 'about', title: 'About Cadence', icon: 'i-focus', color: '#5E3FD0', sum: () => 'Widgets, privacy, version' },
   ];
   const sectionById = (id) => SETTINGS_SECTIONS.find((x) => x.id === id);
   function openSettingsSection(id) {
@@ -1446,7 +1502,7 @@
       SETTINGS_SECTIONS.forEach((s) => { let g = groups.find((x) => x.name === s.group); if (!g) groups.push((g = { name: s.group, items: [] })); g.items.push(s); });
       root.innerHTML = `
         <div class="set-profile"><span class="brand-mark"></span><div><b>Cadence</b><span>Everything is stored on this device only.</span></div></div>
-        ${installRowHTML()}
+        ${permissionCardHTML()}
         ${groups.map((g) => `<div class="set-group-label">${esc(g.name)}</div><div class="set-group">${g.items.map((s) => `
           <button class="set-nav" data-action="openSection" data-id="${s.id}">
             <span class="ic" style="background:${s.color}">${icon(s.icon)}</span>
@@ -1456,11 +1512,12 @@
     }
     root.innerHTML = sectionHTML(ui.settingsSection);
   }
-  function installRowHTML() {
-    if (isStandalone()) return '';
-    const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
-    if (!deferredInstall && !ios) return '';
-    return `<div class="card install-card"><span class="brand-mark"></span><div class="meta"><b>Install Cadence</b><span class="small muted">${deferredInstall ? 'Add it to your home screen and open it like an app.' : 'In Safari, tap Share, then “Add to Home Screen”.'}</span></div>${deferredInstall ? '<button class="btn btn-primary btn-sm" data-action="installApp">Install</button>' : ''}</div>`;
+  // Shown on the settings home when something blocks alerts from working outside the app.
+  function permissionCardHTML() {
+    if (!Device.isNative) return '';
+    if (notifPerm() !== 'granted') return `<div class="card perm-card">${icon('i-bell')}<div class="meta"><b>Notifications are off</b><span class="small muted">Reminders, timers and screen breaks can’t reach you when Cadence is closed.</span></div><button class="btn btn-primary btn-sm" data-action="${notifPerm() === 'prompt' ? 'askNotif' : 'openNotifSettings'}">Turn on</button></div>`;
+    if (!devStatus.exactAlarms) return `<div class="card perm-card">${icon('i-clock')}<div class="meta"><b>Alerts may run late</b><span class="small muted">Allow alarms & reminders so sessions and reminders end exactly on time.</span></div><button class="btn btn-primary btn-sm" data-action="exactAlarms">Allow</button></div>`;
+    return '';
   }
   function sectionHTML(id) {
     const s = S.settings; const sb = s.screenBreak; const p = notifPerm(); const st = eyeStatus();
@@ -1495,13 +1552,14 @@
       case 'focus': return `
         <div class="set-group">
           ${row('Default focus duration', 'Minutes', num('focusMode.defaultDuration', 1, 240, 5))}
-          ${row('Do Not Disturb (simulated)', 'Holds non-essential Cadence alerts during focus. Your phone’s DND is not changed.', tog('focusMode.dnd'))}
+          ${row('Do Not Disturb during focus', 'Silences your phone while a focus session runs and turns off for breaks', tog('focusMode.dnd'))}
+          ${Device.isNative && !devStatus.dndAccess ? row('System access', 'Needed to switch Do Not Disturb on and off', '<button class="btn btn-primary btn-sm" data-action="dndAccess">Allow</button>') : ''}
           ${row('Start music with Focus Mode', '', tog('focusMode.autoMusic'))}
           ${row('Track working time', 'Focus sessions count toward a task’s actual time', tog('focusMode.trackWork'))}
         </div>
-        <div class="set-group"><h3>Apps that stay accessible</h3>
-          <div class="set-row col"><div class="app-toggle-list">${APPS.map((a) => `<label class="app-toggle"><input type="checkbox" data-setting="focusMode.apps.${a.id}" ${s.focusMode.apps[a.id] ? 'checked' : ''}>${icon(a.icon)}${a.name}</label>`).join('')}</div>
-          <div class="sim-note">${icon('i-lock')}<div>App access is simulated inside Cadence. A web app cannot block other apps on your phone.</div></div></div>
+        <div class="set-group"><h3>Still allowed during focus</h3>
+          <div class="set-row col"><div class="app-toggle-list">${DND_ALLOW.map((a) => `<label class="app-toggle"><input type="checkbox" data-setting="focusMode.allow.${a.id}" ${s.focusMode.allow[a.id] ? 'checked' : ''}>${icon(a.icon)}${a.name}</label>`).join('')}</div>
+          <span class="small muted">Alarms and media always play. Everything else waits until your break.</span></div>
         </div>`;
       case 'screen': return `
         <div class="set-group">
@@ -1526,7 +1584,7 @@
             <div class="ctl">${[[30, '30 min'], [60, '1 hour'], [120, '2 hours']].map(([m, l]) => `<button class="btn btn-ghost btn-sm" data-action="eyeSnooze" data-id="${m}">${l}</button>`).join('')}<button class="btn btn-ghost btn-sm" data-action="eyeSnoozeTomorrow">Until tomorrow</button>${S.eye.snoozeUntil > Date.now() ? '<button class="btn btn-soft btn-sm" data-action="eyeUnsnooze">Resume now</button>' : ''}</div></div>
           <div class="set-row"><button class="btn btn-soft btn-block" data-action="eyeNow">${icon('i-eye')}Try a screen break now</button></div>
         </div>
-        <div class="sim-note">${icon('i-eye')}<div>The full-screen reminder shows while Cadence is open. It can’t appear over other apps or lock your phone; a system notification is sent when allowed.</div></div>`;
+        <div class="info-note">${icon('i-eye')}<div>While Cadence is open you get a guided full-screen break. When it’s closed, a notification reminds you while your screen is on — turning the screen off counts as a rest.</div></div>`;
       case 'breaks': return `
         <div class="set-group"><h3>Shown during Pomodoro breaks</h3>
           ${s.breakSuggestions.map((x, i) => `<div class="set-row"><div class="lbl"><span style="color:var(--ink)">${esc(x)}</span></div><div class="ctl"><button class="icon-btn sm" data-action="rmSuggestion" data-id="${i}" aria-label="Remove suggestion">${icon('i-trash')}</button></div></div>`).join('') || '<div class="set-row"><span class="small muted">No suggestions — add your own below.</span></div>'}
@@ -1539,12 +1597,15 @@
           ${row('Default volume', '', `<input type="range" class="range" style="width:140px" min="0" max="1" step="0.05" data-setting="music.volume" data-num value="${s.music.volume}" aria-label="Default volume">`)}
           ${row('Pause during breaks', 'Resumes with the next focus session', tog('music.pauseOnBreak'))}
         </div>
-        <p class="small muted" style="padding:0 6px">All tracks are generated on your device with the Web Audio API — royalty-free and available offline.</p>`;
+        <p class="small muted" style="padding:0 6px">All tracks are generated on your device — royalty-free, available offline, and they keep playing when you leave the app.</p>`;
       case 'notifications': return `
         <div class="set-group"><h3>System notifications</h3>
-          ${row('Permission', p === 'granted' ? 'Allowed — used when Cadence is in the background' : p === 'denied' ? 'Blocked in browser settings — in-app alerts are used' : p === 'unsupported' ? 'Not supported here — in-app alerts are used' : 'Not allowed yet — in-app alerts are used', p === 'default' ? '<button class="btn btn-primary btn-sm" data-action="askNotif">Allow</button>' : `<span class="chip ${p === 'granted' ? 'chip-ok' : 'chip-warn'}">${p}</span>`)}
-          ${row('Notification sounds', '', tog('notifications.sound'))}
-          <div class="set-row"><div class="sim-note" style="width:100%">${icon('i-bell')}<div>Web notifications can be late or missed when Cadence is closed, the browser is suspended or the phone sleeps.</div></div></div>
+          ${Device.isNative ? row('Notifications', p === 'granted' ? 'On — alerts reach you even when Cadence is closed' : p === 'prompt' ? 'Not allowed yet — alerts only appear while Cadence is open' : 'Turned off in system settings — alerts only appear while Cadence is open',
+            p === 'granted' ? '<span class="chip chip-ok">On</span>' : `<button class="btn btn-primary btn-sm" data-action="${p === 'prompt' ? 'askNotif' : 'openNotifSettings'}">Turn on</button>`) : ''}
+          ${Device.isNative ? row('On-time alerts', devStatus.exactAlarms ? 'Timers and reminders fire exactly on time' : 'Without “Alarms & reminders” access Android may deliver alerts a few minutes late',
+            devStatus.exactAlarms ? '<span class="chip chip-ok">On</span>' : '<button class="btn btn-primary btn-sm" data-action="exactAlarms">Allow</button>') : ''}
+          ${row('In-app sounds', 'Chimes while Cadence is open', tog('notifications.sound'))}
+          ${Device.isNative ? row('Sound, vibration & channels', 'Fine-tune each kind of alert in system settings', '<button class="btn btn-ghost btn-sm" data-action="openNotifSettings">Open</button>') : ''}
         </div>
         <div class="set-group"><h3>Notify me about</h3>${Object.entries(NOTIF_CATS).map(([k, [l]]) => row(l, '', tog('notifications.categories.' + k))).join('')}</div>
         <div class="set-group"><h3>Timing</h3>
@@ -1561,25 +1622,28 @@
         </div>
         <p class="small muted" style="padding:0 6px">Goals are just gentle markers — progress shows on the dashboard and in Insights.</p>`;
       case 'data': {
-        const used = (() => { let n = 0; try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith(NS)) n += (localStorage.getItem(k) || '').length; } } catch (e) {} return n; })();
+        const used = Store.keys().filter((k) => k.startsWith(NS)).reduce((n, k) => n + (Store.get(k) || '').length, 0);
         return `
         <div class="set-group"><h3>Stored on this device</h3>
           ${row('Stored data', `${S.tasks.length} tasks · ${S.sessions.length} sessions · ${S.eyeLog.length} screen-break records · ${S.notifs.length} notifications · ~${(used / 1024).toFixed(1)} KB`, '')}
-          <div class="set-row"><button class="btn btn-ghost" style="flex:1" data-action="viewData">View data</button><button class="btn btn-ghost" style="flex:1" data-action="exportData">Export</button></div>
+          <div class="set-row"><button class="btn btn-ghost" style="flex:1" data-action="viewData">View data</button><button class="btn btn-ghost" style="flex:1" data-action="exportData">Back up</button><button class="btn btn-ghost" style="flex:1" data-action="importData">Restore</button></div>
+          <div class="set-row"><span class="small muted">Back up saves everything to a file you can keep in Files, Drive or email. Restore replaces the data on this device with a backup.</span></div>
         </div>
         <div class="set-group"><h3>Danger zone</h3>
           ${row('Clear activity history', 'Removes sessions, screen-break history, notifications and achievements. Keeps tasks and settings.', '<button class="btn btn-danger-ghost btn-sm" data-action="clearHistory">Clear</button>')}
-          ${row('Reset application data', 'Deletes everything Cadence stored here', '<button class="btn btn-danger btn-sm" data-action="resetAll">Reset</button>')}
+          ${row('Reset application data', 'Deletes everything Cadence stored on this device', '<button class="btn btn-danger btn-sm" data-action="resetAll">Reset</button>')}
         </div>`;
       }
       case 'about': return `
         <div class="set-group">
-          ${row('Install as an app', isStandalone() ? 'Cadence is running as an installed app.' : deferredInstall ? 'Add Cadence to your home screen.' : 'Use your browser menu → “Add to Home screen” (Safari: Share → Add to Home Screen).', deferredInstall && !isStandalone() ? '<button class="btn btn-primary btn-sm" data-action="installApp">Install</button>' : '')}
-          ${row('Works offline', 'After the first visit the app is cached on your device.', '')}
+          ${row('Version', '', '<span class="small muted">1.0</span>')}
+          ${row('Works offline', 'Cadence needs no internet connection.', '')}
         </div>
-        <div class="set-group"><h3>Good to know</h3>
-          <div class="set-row col"><div class="sim-note">${icon('i-lock')}<div>Do Not Disturb and app restrictions are <b>simulated</b> inside Cadence. A native build could use Android’s Notification Policy Access, or iOS FamilyControls / ManagedSettings / DeviceActivity, with your permission.</div></div>
-          <p class="small muted">No account, no server: tasks, sessions and settings live only in this browser’s storage.</p></div>
+        <div class="set-group"><h3>Home-screen widgets</h3>
+          <div class="set-row col"><span class="small">Touch and hold your home screen, tap <b>Widgets</b>, then add <b>Focus timer</b> (start, pause and skip sessions) or <b>Today</b> (your tasks, focus goal and streak — tick tasks off right from the widget).</span></div>
+        </div>
+        <div class="set-group"><h3>Privacy</h3>
+          <div class="set-row col"><span class="small muted">No account, no server, no tracking. Tasks, sessions and settings are stored only on this device. Use Back up in Data & storage to keep a copy.</span></div>
         </div>`;
     }
     return '';
@@ -1587,7 +1651,7 @@
   function onSettingChanged(path) {
     if (path === 'music.volume') { S.music.volume = S.settings.music.volume; CadenceAudio.setVolume(S.music.volume); save('music'); }
     if (path === 'music.category' && !CadenceAudio.current) { S.music.category = S.settings.music.category; save('music'); }
-    if (path.startsWith('focusMode.apps') && !S.focus.active) { S.focus.apps = clone(S.settings.focusMode.apps); save('focus'); }
+    if (path.startsWith('focusMode.allow')) { S.focus.allow = clone(S.settings.focusMode.allow); save('focus'); }
     if (path === 'focusMode.defaultDuration' && !S.focus.active) S.focus.duration = S.settings.focusMode.defaultDuration;
     if (path.startsWith('screenBreak.interval') && S.eye.accum > S.settings.screenBreak.interval * MIN) S.eye.accum = S.settings.screenBreak.interval * MIN - 5000;
     if (path === 'screenBreak.enabled') { S.eye.lastTick = Date.now(); if (!S.settings.screenBreak.enabled && S.eye.active) endEye('skipped'); }
@@ -1619,16 +1683,15 @@
     flush();
     const keys = Object.keys(DEFAULTS);
     const m = openModal({ title: 'Stored application data', body: `
-      <table class="data-table">${keys.map((k) => `<tr><td><code>${NS}${k}</code></td><td>${((localStorage.getItem(NS + k) || '').length / 1024).toFixed(1)} KB</td></tr>`).join('')}</table>
+      <table class="data-table">${keys.map((k) => `<tr><td><code>${k}</code></td><td>${((Store.get(NS + k) || '').length / 1024).toFixed(1)} KB</td></tr>`).join('')}</table>
       <label class="field"><span>Inspect</span><select class="select" id="dataKey">${keys.map((k) => `<option>${k}</option>`).join('')}</select></label>
-      <pre class="json-view" id="dataView"></pre>`, foot: '<button class="btn btn-ghost" data-close>Close</button><button class="btn btn-primary" data-action="exportData">Export JSON</button>' });
+      <pre class="json-view" id="dataView"></pre>`, foot: '<button class="btn btn-ghost" data-close>Close</button><button class="btn btn-primary" data-action="exportData">Back up</button>' });
     const show = () => { const k = $('#dataKey', m.el).value; $('#dataView', m.el).textContent = JSON.stringify(S[k], null, 2); };
     $('#dataKey', m.el).onchange = show; show();
   }
 
   /* ============ Router, theme & app shell ============ */
-  let navDepth = 0; let deferredInstall = null;
-  const isStandalone = () => (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+  let navDepth = 0;
   const navState = () => ({ screen: ui.screen, section: ui.settingsSection || null, depth: navDepth });
   function pushNav() { navDepth++; try { history.pushState(navState(), ''); } catch (e) {} }
   function replaceNav() { try { history.replaceState(navState(), ''); } catch (e) {} }
@@ -1677,8 +1740,16 @@
   }
   if (darkMQ) { if (darkMQ.addEventListener) darkMQ.addEventListener('change', applyTheme); else if (darkMQ.addListener) darkMQ.addListener(applyTheme); }
   function buzz(pattern) { if (S.settings.general.vibrate && navigator.vibrate) { try { navigator.vibrate(pattern); } catch (e) {} } }
-  window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredInstall = e; if (ui.screen === 'settings') renderSettings(); });
-  window.addEventListener('appinstalled', () => { deferredInstall = null; toast('Cadence installed', 'Open it from your home screen.', 'ok'); });
+  // Android back button: close the top layer first, then step back, then leave the app.
+  Device.onBack(() => {
+    if (!$('#eyeOverlay').hidden) { postponeEye(); return; }
+    const top = modalStack[modalStack.length - 1];
+    if (top) { if (top.dismissible) top.close(); return; }
+    if (!$('#notifDrawer').hidden) { closeDrawer(); return; }
+    if (ui.settingsSection || ui.screen === 'insights') { goBack(); return; }
+    if (ui.screen !== 'home') { go('home'); return; }
+    Device.leave();
+  });
 
   const A = {
     newTask: () => openTaskForm(), editTask: (el) => openTaskForm(el.dataset.id), deleteTask: (el) => deleteTask(el.dataset.id),
@@ -1688,13 +1759,12 @@
     postpone: (el) => openPostpone(el.dataset.id),
     openFocusSetup: (el) => openFocusSetup(el.dataset.id || null), openFocus: () => go('focus'), endFocus: () => endFocusMode(),
     timerStart: () => { if (S.focus.active && S.timer.phase === 'focus') { startTimer(); return; } startTimer(); if (S.timer.phase !== 'focus') breakToast(); },
-    timerPause: pauseTimer, timerResume: resumeTimer, timerReset: () => resetTimer(), timerSkip: skipPhase,
+    timerPause: () => pauseTimer(), timerResume: () => resumeTimer(), timerReset: () => resetTimer(), timerSkip: () => skipPhase(),
     setPhase: (el) => setPhase(el.dataset.id),
     goTodayTasks: () => { S.ui.taskView = 'today'; save('ui'); go('tasks'); }, goCalendar: () => go('calendar'), goInsights: () => go('insights', { push: true }),
     goEyeSettings: () => openSettingsSection('screen'), goGoalSettings: () => openSettingsSection('goals'),
     openSection: (el) => openSettingsSection(el.dataset.id),
     setTheme: (el) => { S.settings.general.theme = el.dataset.id; save('settings'); applyTheme(); renderSettingsKeepScroll(); },
-    installApp: async () => { if (!deferredInstall) return; deferredInstall.prompt(); try { await deferredInstall.userChoice; } catch (e) {} deferredInstall = null; renderAll(); },
     calDay: (el) => { ui.calSelected = el.dataset.id; ui.calCursor = new Date(el.dataset.id + 'T00:00'); S.ui.calView = 'day'; go('calendar'); },
     calSelect: (el) => { ui.calSelected = el.dataset.id; const d = new Date(el.dataset.id + 'T00:00'); if (d.getMonth() !== ui.calCursor.getMonth()) ui.calCursor = d; renderCalendar(); $('#calAgenda').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); },
     calDayView: (el) => { ui.calSelected = el.dataset.id; ui.calCursor = new Date(el.dataset.id + 'T00:00'); S.ui.calView = 'day'; save('ui'); renderCalendar(); },
@@ -1703,8 +1773,7 @@
     musicCat: (el) => { S.music.category = el.dataset.id; save('music'); renderMusic(); },
     musicShuffle: () => { S.music.shuffle = !S.music.shuffle; save('music'); renderMusic(); }, musicRepeat: () => { S.music.repeat = !S.music.repeat; save('music'); renderMusic(); },
     musicStop: () => { CadenceAudio.stop(); renderMusic(); },
-    simApp: (el) => { const a = APPS.find((x) => x.id === el.dataset.id); if (appAccessible(a.id)) toast(`${a.name} opened`, 'Simulated — accessible during this session.', 'ok', { timeout: 2000 }); else toast(`${a.name} is restricted`, 'Simulated block until your break. Edit accessible apps to allow it.', 'err', { timeout: 2600 }); },
-    toggleEditApps: () => { ui.editApps = !ui.editApps; renderFocus(); },
+    dndAccess: () => Device.openSettings('dnd'), exactAlarms: () => Device.openSettings('exactAlarms'), openNotifSettings: () => Device.openSettings('notifications'),
     eyeDone: () => completeEye(true), eyeSkip: () => skipEye(), eyePostpone: () => postponeEye(),
     eyeSettings: () => { postponeEye(); openSettingsSection('screen'); },
     eyeNow: () => { if (!S.settings.screenBreak.enabled || S.eye.active) return; triggerEye(); },
@@ -1715,26 +1784,46 @@
     eyeInterval: (el) => { S.settings.screenBreak.interval = +el.dataset.id; onSettingChanged('screenBreak.interval'); renderSettingsKeepScroll(); toastSaved(); },
     eyeDuration: (el) => { S.settings.screenBreak.duration = +el.dataset.id; onSettingChanged('screenBreak.duration'); renderSettingsKeepScroll(); toastSaved(); },
     preset202020: () => { Object.assign(S.settings.screenBreak, { interval: 20, duration: 20, enabled: true }); onSettingChanged('screenBreak.interval'); renderSettingsKeepScroll(); toast('20-20-20 rule applied', 'Every 20 min, look ~20 ft away for 20 s.', 'ok'); },
-    askNotif: askNotifPermission,
+    askNotif: () => askNotifPermission(),
     readNotif: (el, e) => { if (e.target.closest('[data-action=delNotif]')) return; const n = S.notifs.find((x) => x.id === el.dataset.id); if (n) { n.read = true; save('notifs'); renderNotifs(); updateBell(); } },
     delNotif: (el) => { S.notifs = S.notifs.filter((x) => x.id !== el.dataset.id); save('notifs'); renderNotifs(); updateBell(); },
     testChime: () => CadenceAudio.chime('focusEnd', S.settings.general.chimeVolume),
     addSuggestion: () => { const i = $('#newSuggestion'); const v = i.value.trim(); if (!v) return; S.settings.breakSuggestions.push(v); save('settings'); renderSettingsKeepScroll(); toast('Suggestion added', '', 'ok'); },
     rmSuggestion: (el) => { S.settings.breakSuggestions.splice(+el.dataset.id, 1); save('settings'); renderSettingsKeepScroll(); },
     resetSuggestions: () => { S.settings.breakSuggestions = DEFAULT_SUGGESTIONS.slice(); save('settings'); renderSettingsKeepScroll(); },
-    viewData, exportData: () => {
-      const blob = new Blob([exportJSON()], { type: 'application/json' }); const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob); a.download = `cadence-data-${dayKey(new Date())}.json`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-      toast('Export started', 'Your data was downloaded as JSON.', 'ok');
+    viewData,
+    exportData: async () => {
+      const name = `cadence-backup-${dayKey(new Date())}.json`; const text = exportJSON();
+      if (Device.isNative) {
+        try { await Device.shareFile(name, text); } catch (e) { toast('Back up failed', (e && e.message) || 'The file could not be created.', 'err'); }
+        return;
+      }
+      const blob = new Blob([text], { type: 'application/json' }); const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    },
+    importData: () => {
+      const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'application/json,.json';
+      inp.onchange = async () => {
+        const f = inp.files && inp.files[0]; if (!f) return;
+        let parsed = null; try { parsed = JSON.parse(await f.text()); } catch (e) { /* handled below */ }
+        const data = parsed && parsed.app === 'Cadence' && parsed.data && typeof parsed.data === 'object' ? parsed.data : null;
+        if (!data) { toast('Not a Cadence backup', 'Choose a file made with Back up.', 'err'); return; }
+        const when = parsed.exportedAt && !isNaN(tms(parsed.exportedAt)) ? ` from ${esc(fmtWhen(parsed.exportedAt))}` : '';
+        if (!(await confirmDialog({ title: 'Restore backup?', message: `Everything on this device will be replaced with the backup${when}.`, confirmText: 'Restore', danger: true }))) return;
+        CadenceAudio.stop();
+        Object.keys(DEFAULTS).forEach((k) => { if (k in data) Store.set(NS + k, JSON.stringify(data[k])); else Store.remove(NS + k); });
+        reloadClean();
+      };
+      inp.click();
     },
     clearHistory: async () => {
       if (!(await confirmDialog({ title: 'Clear activity history?', message: 'Focus sessions, screen-break history, notifications and achievements will be deleted. Tasks and settings stay.', confirmText: 'Clear history', danger: true }))) return;
       S.sessions = []; S.eyeLog = []; S.notifs = []; S.ach = {}; S.tasks.forEach((t) => { t.focusMs = 0; }); save('sessions', 'eyeLog', 'notifs', 'ach', 'tasks'); renderAll(); toast('Activity history cleared', '', 'ok');
     },
     resetAll: async () => {
-      if (!(await confirmDialog({ title: 'Reset all data?', message: 'This permanently deletes every task, setting and record Cadence stored in this browser.', confirmText: 'Reset everything', danger: true }))) return;
-      CadenceAudio.stop(); Object.keys(localStorage).filter((k) => k.startsWith(NS)).forEach((k) => localStorage.removeItem(k));
-      dirty.clear(); window.removeEventListener('pagehide', flush); window.removeEventListener('beforeunload', flush); location.reload();
+      if (!(await confirmDialog({ title: 'Reset all data?', message: 'This permanently deletes every task, setting and record Cadence stored on this device.', confirmText: 'Reset everything', danger: true }))) return;
+      CadenceAudio.stop(); Store.keys().filter((k) => k.startsWith(NS)).forEach((k) => Store.remove(k));
+      reloadClean();
     },
     wMove: (el) => { const o = S.widgets.order.filter((w) => !S.widgets.hidden.includes(w)); const i = o.indexOf(el.dataset.id); const j = i + +el.dataset.dir; if (j < 0 || j >= o.length) return; [o[i], o[j]] = [o[j], o[i]]; S.widgets.order = o.concat(S.widgets.hidden); save('widgets'); renderHome(); },
     wHide: (el) => { S.widgets.hidden.push(el.dataset.id); save('widgets'); renderHome(); },
@@ -1745,7 +1834,7 @@
     timerTask: (el) => { const prev = timerTask(); if (S.timer.phase === 'focus' && S.timer.status === 'running') stopWork(prev, Date.now(), false, 'timer'); S.timer.taskId = el.value || null; if (S.timer.phase === 'focus' && S.timer.status === 'running' && S.settings.focusMode.trackWork) startWork(timerTask(), 'timer'); save('timer'); renderActiveCard(); },
     toggleSub: (el) => { const t = getTask(el.dataset.id); const s = t && t.subtasks.find((x) => x.id === el.dataset.sid); if (s) { s.done = el.checked; if (t.status === 'pending' && s.done) t.status = 'inprogress'; save('tasks'); renderAll(); } },
     musicCat: (el) => { S.music.category = el.value; save('music'); if (CadenceAudio.playing || el.value !== 'fav') playCategory(el.value); else renderMusic(); },
-    appToggle: (el) => { S.focus.apps[el.dataset.id] = el.checked; S.settings.focusMode.apps = clone(S.focus.apps); save('focus', 'settings'); renderFocus(); },
+    allowToggle: (el) => { S.focus.allow[el.dataset.id] = el.checked; S.settings.focusMode.allow = clone(S.focus.allow); save('focus', 'settings'); },
     resumeAfterBreak: (el) => { S.focus.resumeAfterBreak = el.checked; save('focus'); },
   };
   document.addEventListener('click', (e) => {
@@ -1798,8 +1887,93 @@
   });
   $('#widgetGrid').addEventListener('dragend', () => { dragId = null; $$('.dragging,.drop-target').forEach((x) => x.classList.remove('dragging', 'drop-target')); });
 
+  /* ============ Device sync: widgets, alarms, notifications, DND ============ */
+  // Everything the Android side needs to keep working while Cadence is closed.
+  function deviceSnapshot() {
+    const now = Date.now(); const sod = startOfDay(new Date()).getTime(); const t = S.timer; const tk = timerTask();
+    const p = S.settings.pomodoro; const cats = S.settings.notifications.categories; const sb = S.settings.screenBreak;
+    const cur = CadenceAudio.current; const ms = (v) => (v ? tms(v) : 0);
+    const recent = now - 2 * DAY; const soon = (x) => Math.min(ms(x.start) || Infinity, ms(x.due) || Infinity);
+    const tasks = S.tasks.filter((x) => x.status !== 'completed' || x.completedAt >= recent).sort((a, b) => soon(a) - soon(b)).slice(0, 150);
+    const since = dayKey(now - 400 * DAY);
+    return {
+      use24h: S.settings.general.timeFormat === '24',
+      timer: { phase: t.phase, status: t.status, endAt: t.endAt, remaining: t.remaining, total: t.total, cycle: t.cycle || 0 },
+      timerConfig: { focusMs: phaseTotal('focus'), shortMs: p.short * MIN, longMs: p.long * MIN, interval: p.interval, autoTransition: p.autoTransition, taskTitle: tk ? tk.title : '' },
+      notif: { pomodoro: !!cats.pomodoro, breakDone: !!cats.breakDone, screenBreak: !!cats.screenBreak },
+      music: { playing: CadenceAudio.playing, title: cur ? cur.title : '' },
+      dnd: { enabled: !!(S.focus.active && S.focus.dnd), allow: S.focus.allow },
+      eye: { enabled: !!sb.enabled, intervalMs: sb.interval * MIN, durationSec: sb.duration, postponeMin: sb.postponeMin, snoozeUntil: S.eye.snoozeUntil || 0, accumMs: Math.round(S.eye.accum || 0), applyTo: sb.applyTo },
+      reminders: scheduledReminders(now),
+      today: {
+        tasks: tasks.map((x) => ({ id: x.id, title: x.title, status: x.status, start: ms(x.start), end: ms(x.end), due: ms(x.due), completedAt: x.completedAt || 0, color: catColor(x.category) })),
+        focusDays: Array.from(focusDays()).filter((k) => k >= since),
+        focusToday: { day: dayKey(now), ms: Math.round(focusMsBetween(sod, sod + DAY)) },
+        goalMin: S.settings.goals.dailyFocusMin,
+      },
+    };
+  }
+  let syncTimer = null; let draining = false;
+  function scheduleSync(now) {
+    if (!Device.isNative) return;
+    clearTimeout(syncTimer);
+    const run = () => { if (draining) { syncTimer = setTimeout(run, 200); return; } Device.sync(deviceSnapshot()); };
+    if (now) run(); else syncTimer = setTimeout(run, 400);
+  }
+
+  // Replays what happened from widgets and notifications while Cadence was in the background.
+  function catchUp(at) { let g = 0; while (S.timer.status === 'running' && at >= S.timer.endAt && g++ < 12) completePhase(S.timer.endAt); }
+  function closePrompt() { const m = modalStack.find((x) => x.id === 'prompt'); if (m) m.close(); }
+  function applyAction(a) {
+    const at = isNum(a.at) ? a.at : Date.now();
+    switch (a.type) {
+      case 'start': catchUp(at); if (S.timer.status === 'idle') { closePrompt(); S.timer.awaiting = null; startTimer(at); } break;
+      case 'pause': catchUp(at); pauseTimer(at); break;
+      case 'resume': catchUp(at); resumeTimer(at); break;
+      case 'skip': catchUp(at); closePrompt(); skipPhase(at); break;
+      case 'focusTask': catchUp(at); if (S.timer.status === 'idle' && getTask(a.id)) { closePrompt(); S.timer.taskId = a.id; S.timer.phase = 'focus'; S.timer.awaiting = null; startTimer(at); } break;
+      case 'task': {
+        const t = getTask(a.id); if (!t) break;
+        if (a.done && t.status !== 'completed') setStatus(t, 'completed', { at, quiet: true });
+        else if (!a.done && t.status === 'completed') setStatus(t, 'pending', { quiet: true });
+        break;
+      }
+      case 'eye':
+        S.eyeLog.push({ ts: at, action: a.action, ms: a.ms || 0, planned: S.settings.screenBreak.duration * 1000, minutes: a.minutes });
+        S.eyeLog = S.eyeLog.slice(-1000); if (a.action === 'completed') S.eye.accum = 0;
+        save('eyeLog', 'eye'); checkAchievements(); break;
+      case 'eyeFired': S.eye.accum = 0; save('eye'); break;
+      case 'delivered':
+        if (!S.sent[a.key]) {
+          S.sent[a.key] = at; save('sent');
+          S.notifs.unshift({ id: uid(), ts: at, cat: a.cat, title: a.title, body: a.body, read: false }); S.notifs = S.notifs.slice(0, 150); save('notifs');
+        }
+        break;
+      case 'music': if (Date.now() - at < 30000 && CadenceAudio.current) musicToggle(); break;
+      case 'open': openFromOutside(a.screen); break;
+    }
+  }
+  function openFromOutside(screen) {
+    if (screen === 'newTask') { go('tasks'); openTaskForm(); }
+    else if (screen === 'screenBreak') { if (S.settings.screenBreak.enabled && !S.eye.active) triggerEye(); }
+    else if (['home', 'tasks', 'calendar', 'focus', 'settings'].includes(screen)) go(screen);
+  }
+  async function drainActions() {
+    if (draining || !Device.isNative) return;
+    draining = true;
+    try {
+      const list = await Device.takeActions();
+      list.sort((x, y) => (x.at || 0) - (y.at || 0)).forEach((a) => { try { applyAction(a); } catch (e) { console.error('[Cadence] action failed', a, e); } });
+      if (list.length) { save('timer'); updateBell(); renderAll(); }
+    } finally { draining = false; }
+    scheduleSync(true);
+  }
+  Device.onActions(() => drainActions());
+  Device.onResume(() => { drainActions(); refreshDeviceStatus().then(() => { if (['settings', 'focus'].includes(ui.screen)) renderAll(); }); });
+  Device.onPause(() => { flush(); scheduleSync(true); });
+
   /* ============ Main loop (timestamp based) ============ */
-  let lastSlow = 0, lastMinute = new Date().getMinutes();
+  let lastSlow = 0, lastMinute = new Date().getMinutes(), lastSync = Date.now();
   function tick() {
     const now = Date.now();
     let guard = 0;
@@ -1808,35 +1982,38 @@
     renderLive(false); updateMusicProgress();
     const bar = $('.js-eye-widget-bar'); if (bar) { const st = eyeStatus(); if (st.left != null) bar.style.width = `${clamp((1 - st.left / (S.settings.screenBreak.interval * MIN)) * 100, 0, 100)}%`; }
     if (now - lastSlow > 15000) { lastSlow = now; checkReminders(); save('eye'); }
+    if (now - lastSync > 5 * MIN) { lastSync = now; scheduleSync(); }
     const m = new Date().getMinutes();
     if (m !== lastMinute) { lastMinute = m; if (!modalStack.length && !ui.editingWidgets && ['home', 'calendar', 'focus'].includes(ui.screen) && !document.activeElement.closest('select,input')) renderAll(); }
   }
-  document.addEventListener('visibilitychange', () => { tick(); if (document.visibilityState === 'visible') { S.eye.lastTick = Date.now(); renderAll(); } });
+  document.addEventListener('visibilitychange', () => {
+    tick();
+    if (document.visibilityState === 'visible') { S.eye.lastTick = Date.now(); renderAll(); }
+    else { flush(); scheduleSync(true); }
+  });
 
   // init
-  (function init() {
+  (async function init() {
     applyTheme();
-    if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) { try { navigator.serviceWorker.register('sw.js').catch(() => {}); } catch (e) {} }
     if (ui.screen === 'insights') ui.screen = 'home';
-    CadenceAudio.setVolume && (S.music.volume = isNum(S.music.volume) ? S.music.volume : S.settings.music.volume);
-    if (!S.eye.lastTick) S.eye.lastTick = Date.now();
-    S.eye.lastTick = Date.now(); // don't count time while Cadence was closed
+    S.music.volume = isNum(S.music.volume) ? S.music.volume : S.settings.music.volume;
+    S.eye.lastTick = Date.now(); // time while Cadence was closed is handled by the device
     const startScreen = ui.screen; ui.screen = null; go(startScreen);
-    // Restore in-flight states after refresh
+    // Apply what was done from widgets and notifications before catching the timer up to now.
+    await drainActions();
+    await refreshDeviceStatus();
     if (S.eye.active) { if (Date.now() >= S.eye.active.endAt) completeEye(false); else showEyeOverlay(); }
     let guard = 0; while (S.timer.status === 'running' && Date.now() >= S.timer.endAt && guard++ < 12) completePhase(S.timer.endAt);
     if (S.timer.status === 'idle' && S.timer.awaiting === 'break') promptBreak();
     else if (S.timer.status === 'idle' && S.timer.awaiting === 'focus') promptNextFocus();
-    checkReminders(); updateBell();
-    if (corrupted.length) toast('Some saved data was reset', `Unreadable storage for: ${corrupted.join(', ')}. Defaults were restored.`, 'err', { timeout: 7000 });
+    checkReminders(); updateBell(); renderAll(); scheduleSync(true);
+    if (corrupted.length) toast('Some saved data was reset', `Unreadable data for: ${corrupted.join(', ')}. Defaults were restored.`, 'err', { timeout: 7000 });
     setInterval(tick, 500);
-    // first-run hint
-    if (!localStorage.getItem(NS + 'seen')) {
-      try { localStorage.setItem(NS + 'seen', '1'); } catch (e) {}
-      setTimeout(() => toast('Welcome to Cadence', 'Add a task, then press Focus to start your first session. Everything stays in this browser.', 'ok', { timeout: 7000 }), 600);
+    // first run
+    if (!Store.get(NS + 'seen')) {
+      Store.set(NS + 'seen', '1');
+      setTimeout(() => toast('Welcome to Cadence', 'Add a task, then press Focus to start your first session. Everything stays on this device.', 'ok', { timeout: 7000 }), 600);
+      if (Device.isNative && notifPerm() === 'prompt') setTimeout(() => askNotifPermission(true), 1800);
     }
   })();
-
-  // Expose a tiny API for debugging/testing in the console.
-  window.Cadence = { state: S, go, flush, _completePhase: completePhase, _triggerEye: triggerEye };
-})();
+});

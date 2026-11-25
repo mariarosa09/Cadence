@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="app_background">#F6F3FC</color>
+    <color name="brand">#8364E8</color>
+    <color name="colorPrimary">#8364E8</color>
+    <color name="colorPrimaryDark">#5E3FD0</color>
+    <color name="colorAccent">#D397FA</color>
+    <color name="widget_text">#FFFFFF</color>
+    <color name="widget_muted">#B3FFFFFF</color>
+</resources>

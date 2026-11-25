@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Cadence</string>
+    <string name="title_activity_main">Cadence</string>
+    <string name="package_name">app.cadence.focus</string>
+    <string name="custom_url_scheme">app.cadence.focus</string>
+
+    <string name="widget_timer_label">Focus timer</string>
+    <string name="widget_timer_desc">Start, pause and skip Pomodoro sessions from your home screen</string>
+    <string name="widget_today_label">Today</string>
+    <string name="widget_today_desc">Today\'s tasks, focus goal and streak. Tick tasks off from your home screen.</string>
+
+    <string name="w_focus">FOCUS</string>
+    <string name="w_time_default">25:00</string>
+    <string name="w_tap_to_start">Tap play to start focusing</string>
+    <string name="w_start">Start</string>
+    <string name="w_skip">Skip</string>
+    <string name="w_today">Today</string>
+    <string name="w_no_tasks">0/0 tasks</string>
+    <string name="w_new_task">New task</string>
+    <string name="w_empty">Nothing planned today. Tap to add a task.</string>
+    <string name="w_dot">●</string>
+    <string name="w_toggle_task">Mark task done</string>
+</resources>

@@ -1,0 +1,10 @@
+{
+  "appId": "app.cadence.focus",
+  "appName": "Cadence",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false
+  }
+}

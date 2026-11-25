@@ -1,0 +1,21 @@
+{
+  "name": "cadence",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cadence — tasks, calendar, Pomodoro focus, focus music and screen-break reminders.",
+  "scripts": {
+    "sync": "cap sync android",
+    "open": "cap open android",
+    "build:debug": "cap sync android && cd android && gradlew assembleDebug",
+    "build:release": "cap sync android && cd android && gradlew bundleRelease"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/core": "^8.6.2",
+    "@capacitor/preferences": "^8.0.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.6.2"
+  }
+}
