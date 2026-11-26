@@ -1365,8 +1365,7 @@ window.CadenceStore.ready.then(() => {
       <div class="prog-row">${icon('i-volume')}<input type="range" class="range js-mp-vol" min="0" max="100" value="${Math.round(S.music.volume * 100)}" aria-label="Volume"><span class="js-mp-volv">${Math.round(S.music.volume * 100)}%</span></div>
       ${compact ? `<label class="field"><span class="sr-only">Category</span><select class="select" data-action-change="musicCat">${cats.map(([v, l]) => `<option value="${v}" ${cat === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`
         : `<div class="cat-scroll">${cats.map(([v, l]) => `<button class="pill" data-action="musicCat" data-id="${v}" aria-pressed="${cat === v}">${l}</button>`).join('')}</div>
-      <div class="track-list">${list.length ? list.map((t) => `<div class="track-row"><button class="track ${cur && cur.id === t.id ? 'active' : ''}" data-action="musicPlay" data-id="${t.id}"><span class="tn">${esc(t.title)}${t.file ? ' <span class="chip">yours</span>' : ''}</span>${S.music.favorites.includes(t.id) ? `<span class="fav">${icon('i-heart-fill')}</span>` : ''}<span class="tl">${t.length ? fmtSec(t.length) : ''}</span></button>${t.file ? `<button class="icon-btn sm" data-action="removeUpload" data-id="${t.id}" aria-label="Remove ${esc(t.title)}">${icon('i-trash')}</button>` : ''}</div>`).join('') : `<p class="small muted" style="padding:8px">${cat === 'fav' ? 'No favorites yet — tap the heart on a track you like.' : 'No tracks here yet — upload your own music below.'}</p>`}</div>
-      <button class="btn btn-soft btn-sm" data-action="uploadMusic" style="align-self:flex-start">${icon('i-plus')}Upload music</button>`}
+      <div class="track-list">${list.length ? list.map((t) => `<div class="track-row"><button class="track ${cur && cur.id === t.id ? 'active' : ''}" data-action="musicPlay" data-id="${t.id}"><span class="tn">${esc(t.title)}${t.file ? ' <span class="chip">yours</span>' : ''}</span>${S.music.favorites.includes(t.id) ? `<span class="fav">${icon('i-heart-fill')}</span>` : ''}<span class="tl">${t.length ? fmtSec(t.length) : ''}</span></button>${t.file ? `<button class="icon-btn sm" data-action="removeUpload" data-id="${t.id}" aria-label="Remove ${esc(t.title)}">${icon('i-trash')}</button>` : ''}</div>`).join('') : `<p class="small muted" style="padding:8px">${cat === 'fav' ? 'No favorites yet — tap the heart on a track you like.' : 'No tracks here yet — tap Upload to add your own music.'}</p>`}</div>`}
       <p class="tiny muted">Built-in tracks are generated on your device. Music keeps playing when you leave the app, with controls in your notifications.</p>
     </div>`;
   }
@@ -1727,7 +1726,7 @@ window.CadenceStore.ready.then(() => {
       ${fm ? '' : `<div class="row wrap" style="justify-content:center"><button class="btn btn-primary btn-lg" data-action="openFocusSetup">${icon('i-focus')}Set up Focus Mode</button></div>`}
       ${!fm ? '<p class="small muted" style="text-align:center">Focus Mode adds a task, music, Do Not Disturb and app lock on top of the Pomodoro timer. You can also just press Start to run a plain Pomodoro.</p>' : ''}`;
     $('#focusDevice').hidden = true;
-    $('#focusMusicCard').innerHTML = `<div class="widget-head" style="margin-bottom:10px"><h3>${icon('i-music')}Focus music</h3></div><div class="js-music"></div>`;
+    $('#focusMusicCard').innerHTML = `<div class="widget-head" style="margin-bottom:10px"><h3>${icon('i-music')}Focus music</h3><button class="btn btn-soft btn-sm" data-action="uploadMusic">${icon('i-plus')}Upload</button></div><div class="js-music"></div>`;
     renderMusic(); lastCtrlSig = ''; renderLive(false);
   }
 
