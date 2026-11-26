@@ -19,7 +19,7 @@ Everything stays on your phone: no account, no server, no internet needed.</p>
 - **Vibration and sound.** Timer and screen-break alerts vibrate and play a sound. Vibration works even when the phone's touch feedback is off.
 - **Focus music.** Built-in tracks generated on the device (lo-fi, ambient, rain, nature and more), plus your own uploads in any category, including *Others*.
 - **Insights and goals.** Focus time, tasks completed, streaks and charts, based only on your own activity.
-- **Dashboard widgets.** An empty Home tab you fill from the widget gallery.
+- **Dashboard widgets.** The Home tab starts empty. **Customize** opens a widget gallery where you add widgets, or pin them straight to the phone's home screen on Android. In edit mode you can reorder or remove widgets, or reset the whole layout (Cadence asks first).
 
 **Outside the app**
 
@@ -107,6 +107,8 @@ After changing anything in `www/`, run `npx cap sync android` again.
 
 For a Play Store release, create a signing key, add a `signingConfigs` block to `android/app/build.gradle`, and run `./gradlew bundleRelease`.
 
+To install on a phone without Android Studio, turn on USB debugging (Settings → About phone → tap *Build number* seven times, then Developer options → USB debugging), connect the phone and run `npx cap run android`. Alternatively, copy `app-debug.apk` to the phone and open it.
+
 ## Build and run (iPhone)
 
 Requirements: a Mac with Xcode 16 or newer (Xcode 26 for the iOS 26 alarm), an Apple developer account, and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
@@ -124,6 +126,19 @@ In Xcode, set your **Team** under *Signing & Capabilities* for all three targets
 The capabilities come from the entitlement files: App Groups (`group.app.cadence.focus`) on all three targets, and Family Controls on the app and the Screen Time extension. For App Store distribution, Apple must approve the Family Controls entitlement. Request it at developer.apple.com before submitting.
 
 > The iOS native code was written without access to a Mac and hasn't been compiled yet. Expect to fix a few build errors on the first Xcode build. The AlarmKit part (`AlarmController.swift`) only compiles with the iOS 26 SDK.
+
+### Installing on an iPhone with a cable
+
+1. Connect the iPhone to the Mac, choose it as the run destination in Xcode, and press **Run**.
+2. On the iPhone, turn on **Settings → Privacy & Security → Developer Mode** (the phone restarts once).
+3. Trust the developer profile under **Settings → General → VPN & Device Management**.
+
+From a Windows PC, tools such as Sideloadly or AltStore can install a signed `.ipa` over USB. The `.ipa` itself must still be built on a Mac, a rented cloud Mac, or a macOS build service.
+
+| Apple account | What you get |
+| --- | --- |
+| Free Apple ID | The app expires after 7 days and must be reinstalled. App Groups and Family Controls aren't available, so the widgets' shared data and the app lock don't work. |
+| Apple Developer Program ($99/year) | All features. Installs last a year, and you can distribute through TestFlight or the App Store. |
 
 ## Supported versions
 
