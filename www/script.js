@@ -59,6 +59,8 @@ window.CadenceStore.ready.then(() => {
   }
   const fmtSec = (s) => `${Math.floor(s / 60)}:${pad(Math.floor(s % 60))}`;
   const fmtHMS = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(s / 3600)}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`; };
+  /** Minutes and seconds only (minutes keep counting past 60): 07:42, 75:03. */
+  const fmtMS = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); return `${pad(Math.floor(s / 60))}:${pad(s % 60)}`; };
   function fmtRange(a, b, ref) {
     const A = new Date(a), B = new Date(b);
     return dayKey(A) === dayKey(B) ? `${relDay(A, ref)}, ${fmtTime(A)} – ${fmtTime(B)}` : `${fmtWhen(A, ref)} → ${fmtWhen(B, ref)}`;
@@ -1158,7 +1160,7 @@ window.CadenceStore.ready.then(() => {
       if (force) { if (ui.screen === 'focus') renderFocus(); if (ui.screen === 'home') renderActiveCard(); }
     }
     const ac = $('.js-active-time'); if (ac) ac.textContent = fmtClock(rem);
-    $$('.js-work-time').forEach((e) => { const w = getTask(e.dataset.id); if (w) e.textContent = fmtHMS(workedMs(w)); });
+    $$('.js-work-time').forEach((e) => { const w = getTask(e.dataset.id); if (w) e.textContent = fmtMS(workedMs(w)); });
   }
 
   /* ============ 8. Screen Break Reminder ============ */
@@ -1561,8 +1563,9 @@ window.CadenceStore.ready.then(() => {
     }
     if (t.status === 'idle') {
       const w = working[0];
-      el.innerHTML = `<div class="active-inner"><div class="meta"><div class="t">Working on: ${esc(w.title)}</div><div class="s">Tracking actual time</div></div>
-        <div class="big js-work-time" data-id="${w.id}">${fmtHMS(workedMs(w))}</div>
+      // Tapping the card opens the task being tracked; the icon buttons keep their own actions.
+      el.innerHTML = `<div class="active-inner clickable" data-action="editTask" data-id="${w.id}" role="button" tabindex="0" aria-label="Open ${esc(w.title)}"><div class="meta"><div class="t">Working on: ${esc(w.title)}</div><div class="s">Tracking actual time</div></div>
+        <div class="big js-work-time" data-id="${w.id}">${fmtMS(workedMs(w))}</div>
         <button class="btn btn-sm btn-on-dark icon-only" data-action="openFocusSetup" data-id="${w.id}" aria-label="Focus on this task" title="Focus">${icon('i-focus')}</button>
         <button class="btn btn-sm btn-on-dark icon-only" data-action="stopWork" data-id="${w.id}" aria-label="Stop tracking" title="Stop">${icon('i-stop')}</button></div>`;
       return;
@@ -1710,7 +1713,7 @@ window.CadenceStore.ready.then(() => {
       <div class="row" style="justify-content:center">${ringHTML(Math.min(200, Math.min(window.innerWidth, 480) - 150), 11)}</div>
       <div class="session-dots js-t-dots" aria-label="Sessions in this cycle"></div>
       <p class="small muted" style="text-align:center">Session ${(t.cycle % S.settings.pomodoro.interval) + (t.phase === 'focus' ? 1 : 0) || S.settings.pomodoro.interval} of ${S.settings.pomodoro.interval} · long break after every ${S.settings.pomodoro.interval} · ${sessionsBetween(startOfDay(new Date()).getTime(), Date.now() + 1)} completed today</p>
-      <div class="timer-controls js-t-ctrl"></div>
+      <div class="timer-row"><div class="timer-controls js-t-ctrl"></div>${fm ? `<span class="timer-sep" aria-hidden="true"></span><button class="btn btn-ghost icon-only" data-action="openFocusSetup" aria-label="Modify focus settings" title="Modify focus settings">${icon('i-sliders')}</button><button class="btn btn-danger-ghost icon-only" data-action="endFocus" aria-label="End focus session" title="End focus session">${icon('i-stop')}</button>` : ''}</div>
       <div class="focus-toggles">
         ${DND_SUPPORTED ? `<div class="set-row"><div class="lbl"><b>${icon('i-moon')}Do Not Disturb</b><span>${dnd ? 'On — your phone is silenced' : isBreak && fm && dndOn(S.focus.dnd) ? 'Off for the break' : 'Silences your phone during focus'}</span></div><div class="ctl">${sw('data-action-change="focusDnd"', dndOn(fm ? S.focus.dnd : S.settings.focusMode.dnd))}</div></div>`
           : `<div class="set-row"><div class="lbl"><b>${icon('i-moon')}Quiet your iPhone</b><span>Turn on a Focus in Control Center while you work</span></div><div class="ctl"><button class="btn btn-ghost btn-sm" data-action="iosFocusHelp">How</button></div></div>`}
@@ -1718,10 +1721,7 @@ window.CadenceStore.ready.then(() => {
       </div>
       ${isBreak && t.status !== 'idle' ? `<div class="break-suggest">${icon('i-moon')}<div><b>Break time — rest away from the screen</b>${esc(randomSuggestion())}${fm && S.focus.dnd ? '<br><span class="small">Do Not Disturb is off during the break.</span>' : ''}</div></div>` : ''}
       ${fm && isBreak ? `<div class="set-row" style="padding:0;border:0"><div class="lbl"><b>Resume Focus Mode after the break?</b><span>We will ask when the break ends; your previous settings are kept.</span></div><div class="ctl">${sw('data-action-change="resumeAfterBreak"', S.focus.resumeAfterBreak)}</div></div>` : ''}
-      <div class="row wrap" style="justify-content:center">
-        ${fm ? `<button class="btn btn-ghost icon-only" data-action="openFocusSetup" aria-label="Modify focus settings" title="Modify focus settings">${icon('i-sliders')}</button><button class="btn btn-danger-ghost icon-only" data-action="endFocus" aria-label="End focus session" title="End focus session">${icon('i-stop')}</button>`
-          : `<button class="btn btn-soft icon-only big" data-action="openFocusSetup" aria-label="Set up Focus Mode" title="Set up Focus Mode">${icon('i-focus')}</button>`}
-      </div>
+      ${fm ? '' : `<div class="row wrap" style="justify-content:center"><button class="btn btn-soft icon-only big" data-action="openFocusSetup" aria-label="Set up Focus Mode" title="Set up Focus Mode">${icon('i-focus')}</button></div>`}
       ${!fm ? '<p class="small muted" style="text-align:center">Focus Mode adds a task, music, Do Not Disturb and app lock on top of the Pomodoro timer. You can also just press Start to run a plain Pomodoro.</p>' : ''}`;
     $('#focusDevice').hidden = true;
     $('#focusMusicCard').innerHTML = `<div class="widget-head" style="margin-bottom:10px"><h3>${icon('i-music')}Focus music</h3></div><div class="js-music"></div>`;
