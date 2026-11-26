@@ -59,8 +59,11 @@ window.CadenceStore.ready.then(() => {
   }
   const fmtSec = (s) => `${Math.floor(s / 60)}:${pad(Math.floor(s % 60))}`;
   const fmtHMS = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(s / 3600)}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`; };
-  /** Minutes and seconds only (minutes keep counting past 60): 07:42, 75:03. */
-  const fmtMS = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); return `${pad(Math.floor(s / 60))}:${pad(s % 60)}`; };
+  /** Minutes and seconds (07:42); once past an hour the hours appear on the left (1:15:03). */
+  const fmtMS = (ms) => {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    return s >= 3600 ? `${Math.floor(s / 3600)}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}` : `${pad(Math.floor(s / 60))}:${pad(s % 60)}`;
+  };
   function fmtRange(a, b, ref) {
     const A = new Date(a), B = new Date(b);
     return dayKey(A) === dayKey(B) ? `${relDay(A, ref)}, ${fmtTime(A)} – ${fmtTime(B)}` : `${fmtWhen(A, ref)} → ${fmtWhen(B, ref)}`;
@@ -1713,7 +1716,7 @@ window.CadenceStore.ready.then(() => {
       <div class="row" style="justify-content:center">${ringHTML(Math.min(200, Math.min(window.innerWidth, 480) - 150), 11)}</div>
       <div class="session-dots js-t-dots" aria-label="Sessions in this cycle"></div>
       <p class="small muted" style="text-align:center">Session ${(t.cycle % S.settings.pomodoro.interval) + (t.phase === 'focus' ? 1 : 0) || S.settings.pomodoro.interval} of ${S.settings.pomodoro.interval} · long break after every ${S.settings.pomodoro.interval} · ${sessionsBetween(startOfDay(new Date()).getTime(), Date.now() + 1)} completed today</p>
-      <div class="timer-row"><div class="timer-controls js-t-ctrl"></div>${fm ? `<span class="timer-sep" aria-hidden="true"></span><button class="btn btn-ghost icon-only" data-action="openFocusSetup" aria-label="Modify focus settings" title="Modify focus settings">${icon('i-sliders')}</button><button class="btn btn-danger-ghost icon-only" data-action="endFocus" aria-label="End focus session" title="End focus session">${icon('i-stop')}</button>` : ''}</div>
+      <div class="timer-row ${fm ? 'compact' : ''}"><div class="timer-controls js-t-ctrl"></div>${fm ? `<span class="timer-sep" aria-hidden="true"></span><button class="btn btn-ghost icon-only" data-action="openFocusSetup" aria-label="Modify focus settings" title="Modify focus settings">${icon('i-sliders')}</button><button class="btn btn-danger-ghost icon-only" data-action="endFocus" aria-label="End focus session" title="End focus session">${icon('i-stop')}</button>` : ''}</div>
       <div class="focus-toggles">
         ${DND_SUPPORTED ? `<div class="set-row"><div class="lbl"><b>${icon('i-moon')}Do Not Disturb</b><span>${dnd ? 'On — your phone is silenced' : isBreak && fm && dndOn(S.focus.dnd) ? 'Off for the break' : 'Silences your phone during focus'}</span></div><div class="ctl">${sw('data-action-change="focusDnd"', dndOn(fm ? S.focus.dnd : S.settings.focusMode.dnd))}</div></div>`
           : `<div class="set-row"><div class="lbl"><b>${icon('i-moon')}Quiet your iPhone</b><span>Turn on a Focus in Control Center while you work</span></div><div class="ctl"><button class="btn btn-ghost btn-sm" data-action="iosFocusHelp">How</button></div></div>`}
@@ -1721,7 +1724,7 @@ window.CadenceStore.ready.then(() => {
       </div>
       ${isBreak && t.status !== 'idle' ? `<div class="break-suggest">${icon('i-moon')}<div><b>Break time — rest away from the screen</b>${esc(randomSuggestion())}${fm && S.focus.dnd ? '<br><span class="small">Do Not Disturb is off during the break.</span>' : ''}</div></div>` : ''}
       ${fm && isBreak ? `<div class="set-row" style="padding:0;border:0"><div class="lbl"><b>Resume Focus Mode after the break?</b><span>We will ask when the break ends; your previous settings are kept.</span></div><div class="ctl">${sw('data-action-change="resumeAfterBreak"', S.focus.resumeAfterBreak)}</div></div>` : ''}
-      ${fm ? '' : `<div class="row wrap" style="justify-content:center"><button class="btn btn-soft icon-only big" data-action="openFocusSetup" aria-label="Set up Focus Mode" title="Set up Focus Mode">${icon('i-focus')}</button></div>`}
+      ${fm ? '' : `<div class="row wrap" style="justify-content:center"><button class="btn btn-primary btn-lg" data-action="openFocusSetup">${icon('i-focus')}Set up Focus Mode</button></div>`}
       ${!fm ? '<p class="small muted" style="text-align:center">Focus Mode adds a task, music, Do Not Disturb and app lock on top of the Pomodoro timer. You can also just press Start to run a plain Pomodoro.</p>' : ''}`;
     $('#focusDevice').hidden = true;
     $('#focusMusicCard').innerHTML = `<div class="widget-head" style="margin-bottom:10px"><h3>${icon('i-music')}Focus music</h3></div><div class="js-music"></div>`;
@@ -1954,9 +1957,8 @@ window.CadenceStore.ready.then(() => {
           ${row('Default volume', '', `<input type="range" class="range" style="width:140px" min="0" max="1" step="0.05" data-setting="music.volume" data-num value="${s.music.volume}" aria-label="Default volume">`)}
           ${row('Pause during breaks', 'Resumes with the next focus session', tog('music.pauseOnBreak'))}
         </div>
-        <div class="set-group"><h3>Your music</h3>
+        <div class="set-group"><div class="set-group-head"><h3>Your music</h3><button class="btn btn-soft btn-sm" data-action="uploadMusic">${icon('i-plus')}Upload</button></div>
           ${S.music.uploads.length ? S.music.uploads.map((u) => row(esc(u.title), esc(((CadenceAudio.library.find((c) => c.id === u.category) || {}).name || 'My music') + (u.length ? ' · ' + fmtSec(u.length) : '')), `<button class="icon-btn sm" data-action="removeUpload" data-id="${u.id}" aria-label="Remove ${esc(u.title)}">${icon('i-trash')}</button>`)).join('') : '<div class="set-row"><span class="small muted">Upload your own tracks and pick the category they belong to.</span></div>'}
-          <div class="set-row"><button class="btn btn-soft" data-action="uploadMusic">${icon('i-plus')}Upload music</button></div>
         </div>
         <p class="small muted" style="padding:0 6px">Built-in tracks are generated on your device, royalty-free and offline. Music keeps playing when you leave the app.</p>`;
       case 'notifications': return `
@@ -1980,15 +1982,18 @@ window.CadenceStore.ready.then(() => {
         </div>
         <p class="small muted" style="padding:0 6px">Goals are just gentle markers — progress shows on the dashboard and in Insights.</p>`;
       case 'data': {
+        // Each row is the button: tap it to view, back up, restore, clear or reset.
+        const act = (action, ic, title, desc, danger) => `<button type="button" class="set-row set-click ${danger ? 'danger' : ''}" data-action="${action}">
+          <span class="lbl"><b><span class="${danger ? 'danger-ic' : 'set-ic'}">${icon(ic)}</span>${title}</b><span>${desc}</span></span>${icon('i-right', 'chev')}</button>`;
         return `
         <div class="set-group"><h3>Backup</h3>
-          ${row(`<span class="set-ic">${icon('i-search')}</span>View stored data`, 'See everything Cadence keeps on this device', `<button class="btn btn-ghost btn-sm" data-action="viewData">${icon('i-search')}View</button>`)}
-          ${row(`<span class="set-ic">${icon('i-upload')}</span>Back up`, 'Save everything to a file you can keep in Files, Drive or email', `<button class="btn btn-soft btn-sm" data-action="exportData">${icon('i-upload')}Back up</button>`)}
-          ${row(`<span class="set-ic">${icon('i-download')}</span>Restore`, 'Replace the data on this device with a backup file', `<button class="btn btn-ghost btn-sm" data-action="importData">${icon('i-download')}Restore</button>`)}
+          ${act('viewData', 'i-search', 'View stored data', 'See everything Cadence keeps on this device')}
+          ${act('exportData', 'i-upload', 'Back up', 'Save everything to a file you can keep in Files, Drive or email')}
+          ${act('importData', 'i-download', 'Restore', 'Replace the data on this device with a backup file')}
         </div>
         <div class="set-group"><h3>Danger zone</h3>
-          ${row(`<span class="danger-ic">${icon('i-reset')}</span>Clear activity history`, 'Removes sessions, screen-break history and notifications. Keeps tasks and settings.', `<button class="btn btn-danger-ghost btn-sm" data-action="clearHistory">${icon('i-reset')}Clear</button>`)}
-          ${row(`<span class="danger-ic">${icon('i-trash')}</span>Reset application data`, 'Deletes everything Cadence stored on this device', `<button class="btn btn-danger btn-sm" data-action="resetAll">${icon('i-trash')}Reset</button>`)}
+          ${act('clearHistory', 'i-reset', 'Clear activity history', 'Removes sessions, screen-break history and notifications. Keeps tasks and settings.', true)}
+          ${act('resetAll', 'i-trash', 'Reset application data', 'Deletes everything Cadence stored on this device', true)}
         </div>`;
       }
       case 'about': return `

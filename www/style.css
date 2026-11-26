@@ -820,3 +820,23 @@ body.mini-on .fab { bottom: calc(var(--nav-h) + var(--safe-area-inset-bottom, en
 
 /* Sheets without a button row still clear the phone's navigation bar. */
 .modal-body:last-child { padding-bottom: calc(20px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom))); }
+
+/* Settings rows that are buttons themselves (Data & storage). */
+.set-row.set-click { width: 100%; border: 0; border-top: 1px solid var(--line-2); background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.set-group > h3 + .set-row.set-click { border-top: 0; }
+.set-row.set-click:active { background: var(--surface-3); }
+.set-row.set-click .chev { width: 18px; height: 18px; color: var(--muted); flex: none; }
+.set-row.set-click.danger .lbl b { color: var(--danger); }
+.set-group-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-right: 12px; }
+.set-group-head h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); padding: 16px 18px 6px; }
+.set-group-head .btn { margin-top: 8px; }
+.set-group-head + .set-row { border-top: 0; }
+
+/* Focus Mode running: smaller icons so the whole row fits on one line. */
+.timer-row.compact { gap: 8px; flex-wrap: nowrap; }
+.timer-row.compact .timer-controls { gap: 8px; }
+.timer-row.compact .btn.icon-only { width: 40px; min-width: 40px; height: 40px; min-height: 40px; }
+.timer-row.compact .btn.icon-only svg { width: 18px; height: 18px; }
+.timer-row.compact .btn.icon-only.big { width: 52px; min-width: 52px; height: 52px; min-height: 52px; }
+.timer-row.compact .btn.icon-only.big svg { width: 24px; height: 24px; }
+.timer-row.compact .timer-sep { height: 24px; margin: 0 2px; }
