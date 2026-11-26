@@ -333,6 +333,9 @@ input[type="datetime-local"], input[type="time"] { min-width: 0; }
 .widget-edit-bar { position: absolute; top: 10px; right: 10px; display: flex; gap: 4px; background: var(--surface); border-radius: 12px; box-shadow: var(--shadow); padding: 3px; z-index: 2; border: 1px solid var(--line); }
 .widget-grid.editing .widget { outline: 2px dashed var(--accent-soft-2); outline-offset: 2px; }
 .widget-grid.editing .widget > *:not(.widget-edit-bar) { pointer-events: none; opacity: .7; }
+/* The card with "Add widgets" and "Reset layout" stays fully usable while editing. */
+.widget-arrange { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.widget-arrange .widget-head { width: 100%; }
 .widget.dragging { opacity: .4; }
 .widget.drop-target { outline: 2px solid var(--brand-2) !important; }
 

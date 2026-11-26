@@ -1528,7 +1528,7 @@ window.CadenceStore.ready.then(() => {
       return `<div class="card widget ${['weekly'].includes(id) ? '' : ''}" data-widget="${id}" ${ui.editingWidgets ? 'draggable="true"' : ''}>
         ${ui.editingWidgets ? `<div class="widget-edit-bar"><button class="icon-btn sm" data-action="wMove" data-id="${id}" data-dir="-1" aria-label="Move ${ALL_WIDGETS[id]} up" ${i === 0 ? 'disabled' : ''}>${icon('i-up')}</button><button class="icon-btn sm" data-action="wMove" data-id="${id}" data-dir="1" aria-label="Move ${ALL_WIDGETS[id]} down" ${i === visible.length - 1 ? 'disabled' : ''}>${icon('i-down')}</button><button class="icon-btn sm" data-action="wHide" data-id="${id}" aria-label="Remove ${ALL_WIDGETS[id]}">${icon('i-x')}</button></div>` : ''}
         <div class="widget-head"><h3>${icon(w.icon)}${esc(w.title)}</h3>${w.link && !ui.editingWidgets ? `<button class="widget-link" data-action="${w.link[1]}">${esc(w.link[0])}</button>` : ''}</div>${w.body}</div>`;
-    }).join('') + (ui.editingWidgets ? `<div class="card widget" style="grid-column:1/-1;min-height:0"><div class="widget-head"><h3>${icon('i-grid')}Arrange your dashboard</h3></div>
+    }).join('') + (ui.editingWidgets ? `<div class="card widget-arrange" style="grid-column:1/-1"><div class="widget-head"><h3>${icon('i-grid')}Arrange your dashboard</h3></div>
       <p class="small muted">Reorder with the arrows, remove with ✕, or add more widgets.</p>
       <button class="btn btn-primary btn-sm" data-action="openWidgetGallery" style="align-self:flex-start">${icon('i-plus')}Add widgets</button>
       <button class="btn btn-ghost btn-sm" data-action="wReset" style="align-self:flex-start">Reset layout</button></div>` : '')
@@ -2163,7 +2163,10 @@ window.CadenceStore.ready.then(() => {
     wMove: (el) => { const o = S.widgets.order.filter((w) => !S.widgets.hidden.includes(w)); const i = o.indexOf(el.dataset.id); const j = i + +el.dataset.dir; if (j < 0 || j >= o.length) return; [o[i], o[j]] = [o[j], o[i]]; S.widgets.order = o.concat(S.widgets.hidden); save('widgets'); renderHome(); },
     wHide: (el) => { S.widgets.hidden.push(el.dataset.id); save('widgets'); renderHome(); },
     wShow: (el) => { S.widgets.hidden = S.widgets.hidden.filter((w) => w !== el.dataset.id); S.widgets.order = S.widgets.order.filter((w) => w !== el.dataset.id).concat(el.dataset.id); S.widgets.order = S.widgets.order.filter((w) => !S.widgets.hidden.includes(w)).concat(S.widgets.hidden); save('widgets'); renderHome(); },
-    wReset: () => { S.widgets = clone(DEFAULTS.widgets); save('widgets'); renderHome(); },
+    wReset: async () => {
+      if (!(await confirmDialog({ title: 'Reset your dashboard?', message: 'All widgets will be removed from your Home tab. You can add them again from the widget gallery.', confirmText: 'Reset', danger: true }))) return;
+      S.widgets = clone(DEFAULTS.widgets); save('widgets'); renderHome(); toast('Dashboard reset', '', 'ok', { timeout: 1800 });
+    },
   };
   const CHANGE = {
     timerTask: (el) => { const prev = timerTask(); if (S.timer.phase === 'focus' && S.timer.status === 'running') stopWork(prev, Date.now(), false, 'timer'); S.timer.taskId = el.value || null; if (S.timer.phase === 'focus' && S.timer.status === 'running' && S.settings.focusMode.trackWork) startWork(timerTask(), 'timer'); save('timer'); renderActiveCard(); },
