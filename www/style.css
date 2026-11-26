@@ -842,3 +842,23 @@ body.mini-on .fab { bottom: calc(var(--nav-h) + var(--safe-area-inset-bottom, en
 .timer-row.compact .timer-sep { height: 24px; margin: 0 2px; }
 
 .track .tn .tcat { display: block; font-size: 12px; font-weight: 500; color: var(--muted); }
+
+/* ---------- In-app screen break: same layout as the one shown with Cadence closed ---------- */
+.eye-overlay { justify-content: flex-start; gap: 0; padding-left: 28px; padding-right: 28px; }
+.eye-inner { width: min(420px, 100%); margin: auto 0; display: flex; flex-direction: column; align-items: center; padding: 12px 0; }
+.eye-label { font-size: 13px; font-weight: 700; letter-spacing: .1em; color: #D397FA; }
+.eye-overlay h2 { margin-top: 8px; font-size: 30px; }
+.eye-overlay .breath { margin-top: 24px; width: 190px; height: 190px; }
+.breath-txt { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; }
+.breath .phase { position: static; margin-top: 2px; font-size: 14px; text-transform: none; letter-spacing: 0; opacity: .85; }
+.eye-overlay .eye-steps { margin-top: 26px; width: 100%; gap: 14px; padding: 16px; border-radius: 18px; background: rgba(255, 255, 255, .1); }
+.eye-overlay .eye-steps li { background: none; padding: 0; font-size: 15px; gap: 12px; }
+.eye-overlay .eye-steps li b { width: 28px; height: 28px; font-size: 13px; background: rgba(211, 151, 250, .3); }
+.eye-overlay .eye-actions { margin-top: 28px; width: 100%; display: flex; flex-direction: column; align-items: stretch; gap: 12px; }
+.eye-overlay .eye-actions .btn { min-height: 56px; border-radius: 28px; font-size: 16px; font-weight: 700; justify-content: center; }
+.eye-overlay .eye-main { background: #fff !important; color: #441C72 !important; }
+.eye-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.eye-link { margin-top: 4px; min-height: 44px; border: 0; background: none; color: #D397FA; font: inherit; font-weight: 700; font-size: 14px; cursor: pointer; }
+
+/* Focus tab: no divider above the first row (Do Not Disturb). */
+.focus-toggles .set-row:first-child { border-top: 0; }

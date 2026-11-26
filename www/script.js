@@ -200,7 +200,8 @@ window.CadenceStore.ready.then(() => {
     Store.flushed().then(() => location.reload());
   }
 
-  const ui = { screen: S.ui.screen || 'home', filters: { priority: '', category: '', status: '' }, search: '', calCursor: new Date(), calSelected: dayKey(new Date()), statRange: 'week', editingWidgets: false, charts: {} };
+  const ui = { screen: 'home', // a fresh start (app closed from Recents) always opens on Home
+    filters: { priority: '', category: '', status: '' }, search: '', calCursor: new Date(), calSelected: dayKey(new Date()), statRange: 'week', editingWidgets: false, charts: {} };
 
   /* ============ 3. UI primitives ============ */
   function toast(title, msg = '', kind = '', opts = {}) {
@@ -1210,21 +1211,21 @@ window.CadenceStore.ready.then(() => {
   function showEyeOverlay() {
     const o = $('#eyeOverlay'); const a = S.eye.active; if (!a) return;
     o.innerHTML = `
-      <p class="eyebrow" style="color:#9FD3CB">Screen break</p>
-      <h2 id="eyeTitle">Rest your eyes</h2>
-      <div class="breath" aria-hidden="true"><div class="cd js-eye-cd"></div><div class="phase js-eye-phase">Breathe in</div></div>
-      <ol class="eye-steps">
-        <li><b>1</b>Look away from the screen.</li>
-        <li><b>2</b>Focus on something about 20 feet (6 m) away.</li>
-        <li><b>3</b>Blink slowly and relax your eyes.</li>
-        <li><b>4</b>Stretch your neck and shoulders.</li>
-      </ol>
-      <p class="small" style="opacity:.7">${a.pausedTimer ? 'Your Pomodoro timer is paused and resumes after this break.' : S.timer.status === 'running' ? 'Your Pomodoro timer keeps running.' : ''} This is a screen break, separate from Pomodoro breaks.</p>
-      <div class="eye-actions">
-        <button class="btn btn-primary" data-action="eyeDone">${icon('i-check')}Complete break</button>
-        <button class="btn" data-action="eyePostpone">Postpone ${S.settings.screenBreak.postponeMin} min</button>
-        <button class="btn" data-action="eyeSkip">Skip</button>
-        <button class="btn" data-action="eyeSettings">${icon('i-settings')}Adjust settings</button>
+      <div class="eye-inner">
+        <p class="eye-label">SCREEN BREAK</p>
+        <h2 id="eyeTitle">Rest your eyes</h2>
+        <div class="breath" aria-hidden="true"><div class="breath-txt"><div class="cd js-eye-cd"></div><div class="phase js-eye-phase">Breathe in</div></div></div>
+        <ol class="eye-steps">
+          <li><b>1</b>Look away from the screen.</li>
+          <li><b>2</b>Focus on something about 20&nbsp;feet (6&nbsp;m) away.</li>
+          <li><b>3</b>Blink slowly and relax your eyes.</li>
+          <li><b>4</b>Stretch your neck and shoulders.</li>
+        </ol>
+        <div class="eye-actions">
+          <button class="btn btn-primary eye-main" data-action="eyeDone">Complete break</button>
+          <div class="eye-pair"><button class="btn" data-action="eyePostpone">Postpone ${S.settings.screenBreak.postponeMin} min</button><button class="btn" data-action="eyeSkip">Skip</button></div>
+          <button class="eye-link" data-action="eyeSettings">Adjust settings</button>
+        </div>
       </div>`;
     o.hidden = false; document.body.classList.add('no-scroll');
     setTimeout(() => { const b = o.querySelector('[data-action=eyeDone]'); if (b) b.focus(); }, 50);
