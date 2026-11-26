@@ -31,6 +31,81 @@ Everything stays on your phone: no account, no server, no internet needed.</p>
 
 Anything you do from a widget or notification is replayed into the app's data the next time it runs.
 
+## Using Cadence
+
+The bottom bar has five tabs. The chart button at the top opens Insights, and the bell opens your notifications.
+
+### Home
+
+- A greeting with today's date, and a card for the task you're tracking, if any. The card shows the time so far (mm:ss, then h:mm:ss after the first hour). Tap it to open the task.
+- Your dashboard. It starts empty: tap **Customize** to add widgets from the gallery: Pomodoro Timer, Today's Tasks, Upcoming Schedule, Daily Progress, Upcoming Deadlines, Weekly Productivity, Focus Streak, Focus Music Player, Mini Calendar, Screen Break Status and Daily Motivational Quote. In edit mode, drag widgets to reorder them, remove them, or reset the layout. Leaving the tab or the app finishes editing.
+- On Android, each widget in the gallery also has **Add to phone**, which pins it to the phone's home screen.
+
+### Tasks
+
+- Views: **All**, **Today**, **Upcoming** and **Overdue**, plus search, filters (priority, category, status) and sorting.
+- A task has a title, description, start and end time, due date, priority, category (pick one or create a new one with its own color), time estimate, checklist, reminders and a status: *Pending*, *In progress* or *Completed*.
+- Tap a card to open the task. The checkbox completes it, and the icon buttons focus on it with the Pomodoro timer, start or stop tracking actual time, postpone it or delete it.
+- Completing a task shows an **Undo** snackbar.
+
+### Calendar
+
+- **Month**, **Week** and **Day** views. All three take the same height, so switching doesn't make the page jump.
+- Tap the title between the arrows to jump to a date. Tap a day to see its tasks. The **+** button adds a task on the selected day.
+
+### Focus
+
+- The Pomodoro timer: focus, short break and long break, with dots showing where you are in the set. The icon buttons start, pause, reset and skip.
+- **Do Not Disturb** and **Lock other apps** switches for the current session. They only take effect while a focus session is running.
+- **Set up Focus Mode** combines a session length, a task, music, Do Not Disturb and the app lock in one step. While Focus Mode is on, **Modify** and **End** sit in the same row as the timer buttons.
+- The focus music player: categories (**All**, **Favorites**, Lo-fi, Ambient, Rain, Nature, White Noise, Instrumental, Piano, Café, Ocean, Forest, Others and your own), with repeat, shuffle, favorites and volume. **Upload** in the top-right corner adds your own audio files.
+
+### Settings
+
+| Group | Sections |
+| --- | --- |
+| Personalize | **Appearance** (match device, light or dark), **General** (12/24-hour time, first day of the week, sounds, vibration) |
+| Focus | **Pomodoro timer**, **Focus Mode** (Do Not Disturb, what gets through, allowed apps, auto music, time tracking), **Screen breaks**, **Break suggestions** (your own list of break ideas), **Music** (default category, volume, your uploads) |
+| Alerts & goals | **Permissions**, **Notifications** (each kind on or off, reminder lead times, daily plan time), **Goals** |
+| Data | **Data & storage**, **About Cadence** |
+
+### Insights
+
+Focus time, sessions, completed tasks, streaks and goal progress for the day, week, month or all time, with charts and achievements. All of it comes from your own activity on this phone.
+
+## How the timers work
+
+**Pomodoro.** A focus session is followed by a short break; every fourth session is followed by a long break instead. With *auto-transition* on, the next phase starts by itself. The timer runs natively, so it keeps going and ends on time with the app closed. When a phase ends you get a full-screen alert with sound and vibration.
+
+**Screen breaks.** Cadence counts screen time and, after the interval (20 minutes by default), asks you to rest your eyes for the break length (20 seconds by default): the 20-20-20 rule. You can apply it to focus sessions only, general use only, or both. During a screen break the Pomodoro timer can pause and resume afterwards. **Postpone** delays the break by a few minutes and **Skip** starts a new interval. On Android, if the screen is off for at least the break length, that counts as a rest and the count starts over when the screen comes back on.
+
+**Do Not Disturb and app lock** follow the focus timer: they switch on when a focus session starts running, and switch off (DND goes back to your previous setting) when you pause, start a break or end the session.
+
+## Default settings
+
+| Setting | Default |
+| --- | --- |
+| Focus / short break / long break | 25 / 5 / 15 min, long break every 4 sessions, auto-transition on |
+| Screen breaks | On, every 20 min for 20 s, during focus and general use, postpone 5 min, pauses the Pomodoro timer |
+| Do Not Disturb, app lock | Off until you grant the permission, then on by default. Calls, repeat callers and calendar events get through |
+| Notifications | All kinds on, reminder 10 min before start, deadline warning 60 min before, daily plan at 9:00 AM |
+| Sounds and vibration | On |
+| Music | Lo-fi, volume 60%, pauses during breaks |
+| Goals | 100 focus minutes a day, 10 focus hours and 10 tasks a week |
+| Week starts on | Sunday |
+| Theme | Match device |
+
+## Achievements
+
+First focus, Getting into rhythm (10 sessions), Steady cadence (25), Deep worker (100), Ten hours of focus, First tick, Momentum (10 tasks), Finisher (50), Three in a row and A full week (focus streaks), Goal reached (daily goal), Weekly goal, and Kind to your eyes (10 screen breaks).
+
+## Privacy
+
+- No account, sign-in, ads, analytics or tracking. Cadence makes no network requests.
+- Built-in music is generated on the phone. Uploaded songs are copied into the app's private storage and never leave the phone.
+- The installed-apps list and Usage access are only used to know which app is open during a focus session. On iPhone, Apple's Screen Time picker hides app names even from Cadence.
+- Uninstalling Cadence deletes all its data. Use **Back up** first if you want to keep it.
+
 ## Android and iPhone
 
 Both apps share the same interface code in `www/`. Each platform has its own native layer. iOS doesn't allow some Android behaviours, so the iPhone app uses the closest thing Apple allows:
@@ -140,6 +215,16 @@ From a Windows PC, tools such as Sideloadly or AltStore can install a signed `.i
 | --- | --- |
 | Free Apple ID | The app expires after 7 days and must be reinstalled. App Groups and Family Controls aren't available, so the widgets' shared data and the app lock don't work. |
 | Apple Developer Program ($99/year) | All features. Installs last a year, and you can distribute through TestFlight or the App Store. |
+
+## Troubleshooting
+
+| Problem | What to do |
+| --- | --- |
+| Alerts or reminders are late or missing with the app closed | Allow **Notifications** and **Full-screen alerts** in Settings → Permissions. On phones with aggressive battery saving (HONOR, Huawei, Xiaomi, Samsung and others), set Cadence's battery use to *Unrestricted* or allow it to *run in background* / *auto-launch*. |
+| Do Not Disturb doesn't switch on | Turn on **Do Not Disturb access** for Cadence. DND only applies while a focus session is *running*, not when it's paused or on a break. |
+| Other apps aren't locked | Allow **Usage access** and **Display over other apps**, and make sure the app isn't in your allowed list. |
+| Screen breaks don't reset when the screen is off | Allow **Usage access** so Cadence can see screen on/off times while it's closed. |
+| A home-screen widget looks out of date | Open Cadence once; widgets refresh whenever the app saves. Some launchers delay widget updates on battery saver. |
 
 ## Supported versions
 
