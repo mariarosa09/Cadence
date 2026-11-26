@@ -16,6 +16,17 @@ Everything stays on your phone: no account, no server, no internet needed.</p>
   <img alt="Version 1.0.0" src="https://img.shields.io/badge/version-1.0.0-D397FA">
 </p>
 
+<p align="center">
+  <img alt="Android 7.0+ (API 24), targets API 36" src="https://img.shields.io/badge/Android-7.0%2B%20(API%2024)-3DDC84">
+  <img alt="iOS 17+" src="https://img.shields.io/badge/iOS-17%2B-000000?logo=apple&logoColor=white">
+  <img alt="Web UI: HTML, CSS, JavaScript" src="https://img.shields.io/badge/UI-HTML%20%7C%20CSS%20%7C%20JavaScript-F7DF1E?logo=javascript&logoColor=black">
+  <img alt="Charts: Chart.js 4" src="https://img.shields.io/badge/charts-Chart.js%204-FF6384?logo=chartdotjs&logoColor=white">
+  <img alt="Storage: on-device" src="https://img.shields.io/badge/storage-on--device-5E3FD0">
+  <img alt="Works offline" src="https://img.shields.io/badge/offline-100%25-6A4BD8">
+  <img alt="No account, ads or tracking" src="https://img.shields.io/badge/privacy-no%20account%20%C2%B7%20no%20tracking-9B6BE8">
+  <img alt="11 home-screen widgets" src="https://img.shields.io/badge/widgets-11-B07FEF">
+</p>
+
 ## Contents
 
 - [Features](#features)
