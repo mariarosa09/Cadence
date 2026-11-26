@@ -7,6 +7,15 @@
 <p align="center">Tasks, calendar, Pomodoro focus, focus music and screen-break reminders in one calm app for Android and iPhone.<br>
 Everything stays on your phone: no account, no server, no internet needed.</p>
 
+<p align="center">
+  <img alt="Platform: Android | iOS" src="https://img.shields.io/badge/platform-Android%20%7C%20iOS-8364E8">
+  <img alt="Android: Java" src="https://img.shields.io/badge/Android-Java-3DDC84?logo=android&logoColor=white">
+  <img alt="iOS: Swift 5" src="https://img.shields.io/badge/iOS-Swift%205-F05138?logo=swift&logoColor=white">
+  <img alt="Capacitor 8" src="https://img.shields.io/badge/Capacitor-8-119EFF?logo=capacitor&logoColor=white">
+  <img alt="Backend: none, on-device storage" src="https://img.shields.io/badge/backend-none%20(on--device)-441C72">
+  <img alt="Version 1.0.0" src="https://img.shields.io/badge/version-1.0.0-D397FA">
+</p>
+
 ## Contents
 
 - [Features](#features)
