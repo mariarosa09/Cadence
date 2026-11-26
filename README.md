@@ -7,6 +7,25 @@
 <p align="center">Tasks, calendar, Pomodoro focus, focus music and screen-break reminders in one calm app for Android and iPhone.<br>
 Everything stays on your phone: no account, no server, no internet needed.</p>
 
+## Contents
+
+- [Features](#features)
+- [Using Cadence](#using-cadence)
+  - [Home](#home) · [Tasks](#tasks) · [Calendar](#calendar) · [Focus](#focus) · [Settings](#settings) · [Insights](#insights)
+- [How the timers work](#how-the-timers-work)
+- [Default settings](#default-settings)
+- [Achievements](#achievements)
+- [Privacy](#privacy)
+- [Android and iPhone](#android-and-iphone)
+- [Permissions](#permissions)
+- [Data](#data)
+- [Project layout](#project-layout)
+- [Build and run (Android)](#build-and-run-android)
+- [Build and run (iPhone)](#build-and-run-iphone)
+  - [Installing on an iPhone with a cable](#installing-on-an-iphone-with-a-cable)
+- [Troubleshooting](#troubleshooting)
+- [Supported versions](#supported-versions)
+
 ## Features
 
 **In the app**
