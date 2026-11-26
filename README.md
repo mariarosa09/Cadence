@@ -11,14 +11,15 @@ Everything stays on your phone: no account, no server, no internet needed.</p>
 
 **In the app**
 
-- **Tasks and calendar.** Tasks with schedules, due dates, priorities, categories, checklists and reminders. Month, week and day views.
+- **Tasks and calendar.** Tasks with schedules, due dates, priorities, categories, checklists and reminders. Month, week and day views. Tap a task card to open it. While you track actual time on a task, Home shows a live mm:ss counter (hours appear after the first hour); tap it to open the task.
 - **Pomodoro timer and Focus Mode.** Focus sessions with short and long breaks, tied to a task if you like, with background music.
 - **Do Not Disturb** (Android). Switches the phone's DND on while a focus session runs. Pausing, ending focus or starting a break puts DND back the way it was. Calls, repeat callers, messages and calendar events can still come through if you allow them.
 - **App lock.** While a focus session runs, apps you haven't allowed show a lock screen. Pausing or ending focus unlocks them straight away. Calls, Settings, the home screen and Cadence are always allowed.
-- **Screen breaks.** Reminders to rest your eyes, with a guided countdown that keeps its time when you rotate the phone. On Android, turning the screen off for at least the break length counts as a rest: the next break is a full interval after the screen comes back on. This works with the app open, in the background or closed (closed needs Usage access). iPhone can't detect the screen, so it uses a fixed schedule.
+- **Screen breaks.** Reminders to rest your eyes. The break is a guided full-screen countdown: a breathing circle, four short steps, and **Complete break**, **Postpone** and **Skip**. It looks the same whether the app is open or closed, and it keeps its time when you rotate the phone. On Android, turning the screen off for at least the break length counts as a rest: the next break is a full interval after the screen comes back on. This works with the app open, in the background or closed (closed needs Usage access). iPhone can't detect the screen, so it uses a fixed schedule.
 - **Vibration and sound.** Timer and screen-break alerts vibrate and play a sound. Vibration works even when the phone's touch feedback is off.
-- **Focus music.** Built-in tracks generated on the device (lo-fi, ambient, rain, nature and more), plus your own uploads in any category, including *Others*.
+- **Focus music.** Built-in tracks generated on the device (lo-fi, ambient, rain, nature and more), plus your own uploads in any category, including *Others*, or a new category you create while uploading. **All** lists every track.
 - **Insights and goals.** Focus time, tasks completed, streaks and charts, based only on your own activity.
+- **Starts on Home.** When you open Cadence after closing it from Recents, it opens on the Home tab. Switching tabs also resets each tab to its default view.
 - **Dashboard widgets.** The Home tab starts empty. **Customize** opens a widget gallery where you add widgets, or pin them straight to the phone's home screen on Android. In edit mode you can reorder or remove widgets, or reset the whole layout (Cadence asks first).
 
 **Outside the app**
@@ -64,7 +65,7 @@ Google restricts several of these on the Play Store, so publishing needs a justi
 
 ## Data
 
-Data is stored on the device through Capacitor Preferences (SharedPreferences on Android, UserDefaults on iPhone). Widgets and extensions read a copy of the state the app publishes; on iPhone this copy is in the App Group `group.app.cadence.focus`. Uploaded music is copied into the app's private storage. **Settings → Data & storage** has **Back up** (save everything to a JSON file through the share sheet) and **Restore**.
+Data is stored on the device through Capacitor Preferences (SharedPreferences on Android, UserDefaults on iPhone). Widgets and extensions read a copy of the state the app publishes; on iPhone this copy is in the App Group `group.app.cadence.focus`. Uploaded music is copied into the app's private storage. **Settings → Data & storage** has **View stored data** (every section starts collapsed), **Back up** (save everything to a JSON file through the share sheet), **Restore**, **Clear activity history** and **Reset application data**. Tap a row to use it.
 
 ## Project layout
 
