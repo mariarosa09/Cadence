@@ -555,6 +555,7 @@ body.mini-on .fab { bottom: calc(var(--nav-h) + var(--safe-area-inset-bottom, en
 .set-row .lbl span { font-size: 12.5px; color: var(--muted); }
 .set-row .ctl { flex: none; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .set-row .ctl .select, .set-row .ctl .input { min-height: 40px; padding: 6px 10px; width: auto; }
+.set-row .ctl .select { padding-right: 36px; background-position: right 10px center; max-width: 230px; text-overflow: ellipsis; }
 .set-row.col { flex-direction: column; align-items: stretch; }
 .set-row.col .ctl { justify-content: flex-start; }
 .stepper { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 13px; overflow: hidden; }
