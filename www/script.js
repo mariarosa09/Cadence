@@ -2048,7 +2048,7 @@ window.CadenceStore.ready.then(() => {
     // Everything at once: one section per kind of data, each expandable, in a scrollable sheet.
     openModal({ title: 'Stored application data', size: 'tall', body: `
       <p class="small muted">Everything Cadence keeps on this device. Tap a section to show or hide it.</p>
-      <div class="data-dump">${keys.map((k, i) => `<details ${i === 0 ? 'open' : ''}><summary><code>${k}</code><span>${size(k)}</span></summary><pre class="json-view">${esc(JSON.stringify(S[k], null, 2))}</pre></details>`).join('')}</div>`,
+      <div class="data-dump">${keys.map((k) => `<details><summary><code>${k}</code><span>${size(k)}</span></summary><pre class="json-view">${esc(JSON.stringify(S[k], null, 2))}</pre></details>`).join('')}</div>`,
       foot: `<button class="btn btn-primary" data-action="exportData">${icon('i-upload')}Back up</button>` });
   }
 
