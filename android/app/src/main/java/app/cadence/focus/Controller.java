@@ -39,6 +39,7 @@ final class Controller {
     }
 
     static synchronized void refresh(Context c) {
+        ScreenRest.watch(c);
         long now = System.currentTimeMillis();
         JSONObject snap = Store.snapshot(c);
         JSONObject cfg = config(snap);
@@ -271,6 +272,15 @@ final class Controller {
         JSONObject t = Store.timer(c);
         if (eyeEligible(e, t, now) && now >= Store.getLong(c, "eyeNextAt") - 5_000) {
             long interval = Math.max(60_000L, e.optLong("intervalMs", 20 * 60_000L));
+            // If the screen was off long enough to count as a rest during this interval, the
+            // break is due a full interval after the screen came back on.
+            long anchor = Store.getLong(c, "eyeNextAt") - interval;
+            long restEnd = ScreenRest.lastRestEnd(c, anchor, ScreenRest.minOffMs(snap));
+            if (restEnd > anchor && restEnd + interval > now + 5_000) {
+                Store.putLong(c, "eyeNextAt", restEnd + interval);
+                refresh(c);
+                return;
+            }
             PowerManager pm = (PowerManager) c.getSystemService(Context.POWER_SERVICE);
             boolean screenOn = pm == null || pm.isInteractive();
             JSONObject cats = snap.optJSONObject("notif");

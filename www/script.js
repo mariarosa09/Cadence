@@ -2358,10 +2358,19 @@ window.CadenceStore.ready.then(() => {
     const m = new Date().getMinutes();
     if (m !== lastMinute) { lastMinute = m; if (!modalStack.length && !ui.editingWidgets && ['home', 'calendar', 'focus'].includes(ui.screen) && !document.activeElement.closest('select,input')) renderAll(); }
   }
+  // Screen breaks: turning the screen off for at least the break length counts as a rest, so the
+  // count starts over when you come back (switching to another app doesn't).
+  let hiddenAt = 0;
+  async function checkScreenRest() {
+    if (!Device.isNative || !hiddenAt || S.eye.active) return;
+    const since = hiddenAt; hiddenAt = 0;
+    const at = await Device.screenRest(since, Math.max(5, S.settings.screenBreak.duration) * 1000);
+    if (at > since) { S.eye.accum = Math.max(0, Date.now() - at); S.eye.lastTick = Date.now(); save('eye'); renderAll(); }
+  }
   document.addEventListener('visibilitychange', () => {
     tick();
-    if (document.visibilityState === 'visible') { S.eye.lastTick = Date.now(); renderAll(); }
-    else { flush(); scheduleSync(true); }
+    if (document.visibilityState === 'visible') { S.eye.lastTick = Date.now(); renderAll(); checkScreenRest(); }
+    else { hiddenAt = Date.now(); flush(); scheduleSync(true); }
   });
 
   // init

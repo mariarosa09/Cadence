@@ -93,6 +93,8 @@
     openSettings: (which) => (Native ? quiet(Native.openSettings({ which })) : Promise.resolve()),
     setAppearance: (dark, color) => (Native ? quiet(() => Native.setAppearance({ dark, color })) : Promise.resolve()),
     shareFile: (filename, text, mimeType = 'application/json') => (Native ? Native.shareFile({ filename, text, mimeType }) : Promise.reject(new Error('Not available'))),
+    /** Time the screen last came back on after being off at least minMs, since `since` (0 if none). */
+    screenRest: (since, minMs) => (Native ? quiet(() => Native.screenRest({ since, minMs }).then((r) => (r && r.at) || 0), 0) : Promise.resolve(0)),
     vibrate: (pattern) => (Native ? quiet(() => Native.vibrate({ pattern })) : Promise.resolve()),
     pinWidget: (kind) => (Native ? quiet(() => Native.pinWidget({ kind }), { supported: false }) : Promise.resolve({ supported: false })),
     listApps: () => (Native ? quiet(() => Native.listApps().then((r) => (r && r.apps) || []), []) : Promise.resolve([])),

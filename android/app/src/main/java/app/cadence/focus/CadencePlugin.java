@@ -301,6 +301,14 @@ public class CadencePlugin extends Plugin {
         call.resolve(new JSObject().put("supported", ok));
     }
 
+    /** When the screen last came back on after a rest (off for at least minMs) since a time; 0 if not. */
+    @PluginMethod
+    public void screenRest(PluginCall call) {
+        long since = (long) (double) call.getDouble("since", 0d);
+        long minMs = (long) (double) call.getDouble("minMs", 20_000d);
+        call.resolve(new JSObject().put("at", ScreenRest.lastRestEnd(getContext(), since, minMs)));
+    }
+
     /** Launchable apps with icons, for choosing which apps stay usable during focus. */
     @PluginMethod
     public void listApps(PluginCall call) {

@@ -15,7 +15,7 @@ Everything stays on your phone: no account, no server, no internet needed.</p>
 - **Pomodoro timer and Focus Mode.** Focus sessions with short and long breaks, tied to a task if you like, with background music.
 - **Do Not Disturb** (Android). Switches the phone's DND on while a focus session runs. Pausing, ending focus or starting a break puts DND back the way it was. Calls, repeat callers, messages and calendar events can still come through if you allow them.
 - **App lock.** While a focus session runs, apps you haven't allowed show a lock screen. Pausing or ending focus unlocks them straight away. Calls, Settings, the home screen and Cadence are always allowed.
-- **Screen breaks.** Reminders to rest your eyes, with a guided countdown that keeps its time when you rotate the phone.
+- **Screen breaks.** Reminders to rest your eyes, with a guided countdown that keeps its time when you rotate the phone. On Android, turning the screen off for at least the break length counts as a rest: the next break is a full interval after the screen comes back on. This works with the app open, in the background or closed (closed needs Usage access). iPhone can't detect the screen, so it uses a fixed schedule.
 - **Vibration and sound.** Timer and screen-break alerts vibrate and play a sound. Vibration works even when the phone's touch feedback is off.
 - **Focus music.** Built-in tracks generated on the device (lo-fi, ambient, rain, nature and more), plus your own uploads in any category, including *Others*.
 - **Insights and goals.** Focus time, tasks completed, streaks and charts, based only on your own activity.
