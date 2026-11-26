@@ -11,7 +11,12 @@ Everything stays on your phone: no account, no server, no internet needed.</p>
 
 - [Features](#features)
 - [Using Cadence](#using-cadence)
-  - [Home](#home) · [Tasks](#tasks) · [Calendar](#calendar) · [Focus](#focus) · [Settings](#settings) · [Insights](#insights)
+  - [Home](#home)
+  - [Tasks](#tasks)
+  - [Calendar](#calendar)
+  - [Focus](#focus)
+  - [Settings](#settings)
+  - [Insights](#insights)
 - [How the timers work](#how-the-timers-work)
 - [Default settings](#default-settings)
 - [Achievements](#achievements)
