@@ -69,4 +69,13 @@
     <string name="block_back">Back to Cadence</string>
     <string name="block_home">Go to home screen</string>
     <string name="fgs_special_use">Locks the apps you chose while a focus session runs</string>
+    <string name="alert_screen_steps">1   Look away from the screen.
+2   Focus on something about 20 feet (6 m) away.
+3   Blink slowly and relax your eyes.
+4   Stretch your neck and shoulders.</string>
+    <string name="alert_skip">Skip</string>
+    <string name="alert_complete">Complete break</string>
+    <string name="alert_postpone">Postpone %1$d min</string>
+    <string name="alert_breathe_in">Breathe in</string>
+    <string name="alert_breathe_out">Breathe out</string>
 </resources>

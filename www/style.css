@@ -558,6 +558,8 @@ body.mini-on .fab { bottom: calc(var(--nav-h) + var(--safe-area-inset-bottom, en
 .set-row .lbl span { font-size: 12.5px; color: var(--muted); }
 .set-row .ctl { flex: none; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .set-row .ctl .select, .set-row .ctl .input { min-height: 40px; padding: 6px 10px; width: auto; }
+.set-row .ctl .enh-wrap.dt { min-width: 150px; }
+.set-row .ctl .enh-wrap.dt .input { width: 100%; }
 .set-row .ctl .select { padding-right: 36px; background-position: right 10px center; max-width: 230px; text-overflow: ellipsis; }
 .set-row.col { flex-direction: column; align-items: stretch; }
 .set-row.col .ctl { justify-content: flex-start; }
@@ -785,3 +787,29 @@ body.mini-on .fab { bottom: calc(var(--nav-h) + var(--safe-area-inset-bottom, en
 .tpick-ampm { display: flex; gap: 4px; padding: 4px; border-radius: 14px; background: var(--surface-3); align-self: center; }
 .tpick-ampm button { width: 88px; height: 40px; border: 0; border-radius: 11px; background: transparent; font: inherit; font-size: 15px; font-weight: 700; color: var(--muted); cursor: pointer; }
 .tpick-ampm button.on { background: var(--accent); color: #fff; }
+
+/* ---------- Icon-only buttons ---------- */
+.btn.icon-only { width: 44px; min-width: 44px; height: 44px; min-height: 44px; padding: 0; justify-content: center; border-radius: 50%; gap: 0; }
+.btn.icon-only svg { width: 20px; height: 20px; margin: 0; }
+.btn.icon-only.big { width: 64px; height: 64px; min-width: 64px; }
+.btn.icon-only.big svg { width: 28px; height: 28px; }
+.btn-sm.icon-only { width: 38px; min-width: 38px; height: 38px; min-height: 38px; }
+.btn-sm.icon-only svg { width: 18px; height: 18px; }
+.timer-controls { display: flex; align-items: center; justify-content: center; gap: 14px; }
+.active-inner.clickable { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.active-inner.clickable:active { transform: scale(.99); }
+.active-inner .btn-on-dark.icon-only { width: 40px; height: 40px; min-width: 40px; min-height: 40px; }
+.task-card[data-action="editTask"] { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.task-card[data-action="editTask"]:active { background: var(--surface-2); }
+.task-actions { gap: 8px; }
+
+/* ---------- Data & storage ---------- */
+.set-ic { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); margin-right: 10px; vertical-align: middle; }
+.set-ic svg { width: 16px; height: 16px; }
+.modal.tall { height: 92vh; height: 92dvh; }
+.data-dump { display: flex; flex-direction: column; gap: 8px; }
+.data-dump details { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); overflow: hidden; }
+.data-dump summary { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 14px; cursor: pointer; font-weight: 650; list-style: none; }
+.data-dump summary::-webkit-details-marker { display: none; }
+.data-dump summary span { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.data-dump .json-view { max-height: none; margin: 0; border-radius: 0; }

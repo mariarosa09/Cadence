@@ -58,6 +58,7 @@ window.CadenceStore.ready.then(() => {
     return m >= 60 ? `${Math.floor(m / 60)}:${pad(m % 60)}:${pad(s % 60)}` : `${pad(m)}:${pad(s % 60)}`;
   }
   const fmtSec = (s) => `${Math.floor(s / 60)}:${pad(Math.floor(s % 60))}`;
+  const fmtHMS = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(s / 3600)}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`; };
   function fmtRange(a, b, ref) {
     const A = new Date(a), B = new Date(b);
     return dayKey(A) === dayKey(B) ? `${relDay(A, ref)}, ${fmtTime(A)} – ${fmtTime(B)}` : `${fmtWhen(A, ref)} → ${fmtWhen(B, ref)}`;
@@ -102,7 +103,7 @@ window.CadenceStore.ready.then(() => {
     timer: { phase: 'focus', status: 'idle', endAt: 0, remaining: 0, total: 0, cycle: 0, taskId: null, awaiting: null, phaseStartedAt: 0 },
     focus: { active: false, taskId: null, duration: 25, music: 'lofi', dnd: false, lockApps: false, allow: null, resumeAfterBreak: true, startedAt: 0 },
     eye: { accum: 0, lastTick: 0, snoozeUntil: 0, active: null },
-    music: { category: 'lofi', trackId: null, repeat: false, shuffle: false, favorites: [], volume: 0.6, uploads: [] },
+    music: { category: 'lofi', trackId: null, repeat: false, shuffle: false, favorites: [], volume: 0.6, uploads: [], customCats: [] },
     sent: {},
     ui: { screen: 'home', taskView: 'all', calView: 'month', sort: 'scheduled' },
   };
@@ -212,6 +213,8 @@ window.CadenceStore.ready.then(() => {
   const modalStack = [];
   function openModal({ title, body, foot = '', size = '', onClose, id, dismissible = true }) {
     if (id) { const ex = modalStack.find((m) => m.id === id); if (ex) ex.close(true); }
+    // The X already closes the sheet, so plain Cancel/Close buttons are left out.
+    if (dismissible) foot = foot.replace(/<button[^>]*data-close[^>]*>\s*(Cancel|Close)\s*<\/button>/g, '');
     const wrap = document.createElement('div');
     wrap.className = 'modal-wrap';
     wrap.innerHTML = `<div class="modal ${size}" role="dialog" aria-modal="true" aria-label="${esc(title)}">
@@ -232,7 +235,7 @@ window.CadenceStore.ready.then(() => {
     return new Promise((res) => {
       let done = false;
       const m = openModal({ title, size: 'sm', body: `<p>${message}</p>`,
-        foot: `<button class="btn btn-ghost" data-c="0">${esc(cancelText)}</button><button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" data-c="1">${esc(confirmText)}</button>`,
+        foot: `${cancelText === 'Cancel' ? '' : `<button class="btn btn-ghost" data-c="0">${esc(cancelText)}</button>`}<button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" data-c="1">${esc(confirmText)}</button>`,
         onClose: () => { if (!done) res(false); } });
       $$('[data-c]', m.el).forEach((b) => b.onclick = () => { done = true; m.close(true); res(b.dataset.c === '1'); });
     });
@@ -561,7 +564,7 @@ window.CadenceStore.ready.then(() => {
           ${t && (t.actualMs || t.workingSince || t.focusMs) ? `<p class="small muted" style="margin-top:8px">Actual time worked: <b>${fmtDur(workedMs(t))}</b>${t.focusMs ? ` · in focus sessions: ${fmtDur(t.focusMs)}` : ''}${isScheduled(t) ? ` · scheduled: ${fmtDur(tms(t.end) - tms(t.start))}` : ''}</p>` : ''}
         </div>
       </form>`;
-    const foot = `${t ? `<button class="btn btn-danger-ghost" data-act="del">${icon('i-trash')}Delete</button><span class="spacer"></span>` : ''}<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-act="save">${t ? 'Save changes' : 'Create task'}</button>`;
+    const foot = `${t ? `<button class="btn btn-danger-ghost" data-act="del">${icon('i-trash')}Delete</button><span class="spacer"></span>` : ''}<button class="btn btn-primary" data-act="save">${icon(t ? 'i-check' : 'i-plus')}${t ? 'Save changes' : 'Create task'}</button>`;
     const m = openModal({ title: t ? 'Edit task' : 'New task', body, foot, id: 'task-form' });
     const form = $('#taskForm', m.el);
     let status = d.status;
@@ -1127,11 +1130,12 @@ window.CadenceStore.ready.then(() => {
   }
   function timerControlsHTML() {
     const t = S.timer; const b = [];
-    if (t.status === 'idle') b.push(`<button class="btn btn-primary" data-action="timerStart">${icon('i-play')}Start${t.phase !== 'focus' ? ' break' : ''}</button>`);
-    if (t.status === 'running') b.push(`<button class="btn btn-soft" data-action="timerPause">${icon('i-pause')}Pause</button>`);
-    if (t.status === 'paused') b.push(`<button class="btn btn-primary" data-action="timerResume">${icon('i-play')}Resume</button>`);
-    if (t.status !== 'idle') b.push(`<button class="btn btn-ghost" data-action="timerReset" aria-label="Reset">${icon('i-reset')}Reset</button>`);
-    b.push(`<button class="btn btn-ghost" data-action="timerSkip" aria-label="${t.phase === 'focus' ? 'End focus early, go to break' : 'Skip break'}" title="${t.phase === 'focus' ? 'End early → break' : 'Skip break'}">${icon('i-skip')}</button>`);
+    const btn = (cls, action, ic, label) => `<button class="btn ${cls} icon-only" data-action="${action}" aria-label="${label}" title="${label}">${icon(ic)}</button>`;
+    if (t.status === 'idle') b.push(btn('btn-primary big', 'timerStart', 'i-play', t.phase !== 'focus' ? 'Start break' : 'Start focus'));
+    if (t.status === 'running') b.push(btn('btn-primary big', 'timerPause', 'i-pause', 'Pause'));
+    if (t.status === 'paused') b.push(btn('btn-primary big', 'timerResume', 'i-play', 'Resume'));
+    if (t.status !== 'idle') b.push(btn('btn-ghost', 'timerReset', 'i-reset', 'Reset'));
+    b.push(btn('btn-ghost', 'timerSkip', 'i-skip', t.phase === 'focus' ? 'End focus early, go to break' : 'Skip break'));
     return b.join('');
   }
   function dotsHTML() {
@@ -1154,6 +1158,7 @@ window.CadenceStore.ready.then(() => {
       if (force) { if (ui.screen === 'focus') renderFocus(); if (ui.screen === 'home') renderActiveCard(); }
     }
     const ac = $('.js-active-time'); if (ac) ac.textContent = fmtClock(rem);
+    $$('.js-work-time').forEach((e) => { const w = getTask(e.dataset.id); if (w) e.textContent = fmtHMS(workedMs(w)); });
   }
 
   /* ============ 8. Screen Break Reminder ============ */
@@ -1241,6 +1246,8 @@ window.CadenceStore.ready.then(() => {
   /* ============ 9. Music player ============ */
   const music = { pausedForBreak: false };
   S.music.uploads = (S.music.uploads || []).filter((u) => u && u.id && u.path);
+  S.music.customCats = (S.music.customCats || []).filter((c) => c && c.id && c.name);
+  CadenceAudio.setCategories(S.music.customCats);
   function registerUploads() {
     CadenceAudio.setCustom(S.music.uploads.map((u) => ({ id: u.id, title: u.title, category: u.category, src: Device.fileSrc(u.path), length: u.length || 0 })));
   }
@@ -1250,8 +1257,18 @@ window.CadenceStore.ready.then(() => {
     return new Promise((res) => {
       let done = false;
       const m = openModal({ title, size: 'sheet', id: 'cat-sheet', onClose: () => { if (!done) res(null); },
-        body: `<p class="small muted" style="margin-bottom:6px">Your tracks are added to this category in the player.</p><div class="opt-list">${CadenceAudio.library.map((c) => `<button type="button" class="opt ${c.id === current ? 'on' : ''}" data-id="${c.id}"><span>${esc(c.name)}</span>${c.id === current ? icon('i-check') : ''}</button>`).join('')}</div>` });
-      m.el.querySelector('.opt-list').addEventListener('click', (e) => { const b = e.target.closest('[data-id]'); if (!b) return; done = true; m.close(true); res(b.dataset.id); });
+        body: `<p class="small muted" style="margin-bottom:6px">Your tracks are added to this category in the player.</p><div class="opt-list">${CadenceAudio.library.map((c) => `<button type="button" class="opt ${c.id === current ? 'on' : ''}" data-id="${c.id}"><span>${esc(c.name)}</span>${c.id === current ? icon('i-check') : ''}</button>`).join('')}<button type="button" class="opt opt-new" data-new="1"><span class="opt-l">${icon('i-plus')}New category…</span></button></div>` });
+      m.el.querySelector('.opt-list').addEventListener('click', async (e) => {
+        const b = e.target.closest('[data-id], [data-new]'); if (!b) return;
+        done = true; m.close(true);
+        if (!b.dataset.new) { res(b.dataset.id); return; }
+        const name = await promptText({ title: 'New music category', label: 'Category name', placeholder: 'e.g. Study beats', max: 30 });
+        if (!name) { res(null); return; }
+        const existing = CadenceAudio.library.find((c) => c.name.toLowerCase() === name.toLowerCase());
+        if (existing) { res(existing.id); return; }
+        const cat = { id: 'cat-' + uid(), name }; S.music.customCats.push(cat); CadenceAudio.setCategories(S.music.customCats); save('music');
+        res(cat.id);
+      });
     });
   }
   function audioLength(src) {
@@ -1351,7 +1368,7 @@ window.CadenceStore.ready.then(() => {
   function renderMusic() {
     $$('.js-music').forEach((e) => (e.innerHTML = playerHTML(e.dataset.compact === '1')));
     const cur = CadenceAudio.current; const playing = CadenceAudio.playing;
-    const mini = (cls) => cur ? `<div class="art ${playing ? 'playing' : ''}" style="background:${CAT_ART[cur.category]}">${icon('i-music')}</div>
+    const mini = (cls) => cur ? `<div class="art ${playing ? 'playing' : ''}" style="background:${CAT_ART[cur.category] || CAT_ART.lofi}">${icon('i-music')}</div>
       <div class="meta"><div class="t">${esc(cur.title)}</div><div class="c">${esc(cur.categoryName)}</div></div>
       <button class="icon-btn" data-action="musicToggle" aria-label="${playing ? 'Pause' : 'Play'}">${icon(playing ? 'i-pause' : 'i-play')}</button>
       <button class="icon-btn" data-action="musicNext" aria-label="Next">${icon('i-next')}</button>${cls}` : '';
@@ -1544,14 +1561,17 @@ window.CadenceStore.ready.then(() => {
     }
     if (t.status === 'idle') {
       const w = working[0];
-      el.innerHTML = `<div class="active-inner"><div class="meta"><div class="t">Working on: ${esc(w.title)}</div><div class="s">Tracking actual time · ${fmtDur(workedMs(w))} so far</div></div><button class="btn btn-sm btn-on-dark" data-action="stopWork" data-id="${w.id}">Stop</button><button class="btn btn-sm btn-on-dark" data-action="openFocusSetup" data-id="${w.id}">Focus</button></div>`;
+      el.innerHTML = `<div class="active-inner"><div class="meta"><div class="t">Working on: ${esc(w.title)}</div><div class="s">Tracking actual time</div></div>
+        <div class="big js-work-time" data-id="${w.id}">${fmtHMS(workedMs(w))}</div>
+        <button class="btn btn-sm btn-on-dark icon-only" data-action="openFocusSetup" data-id="${w.id}" aria-label="Focus on this task" title="Focus">${icon('i-focus')}</button>
+        <button class="btn btn-sm btn-on-dark icon-only" data-action="stopWork" data-id="${w.id}" aria-label="Stop tracking" title="Stop">${icon('i-stop')}</button></div>`;
       return;
     }
-    el.innerHTML = `<div class="active-inner ${t.phase !== 'focus' ? 'break' : ''}">
+    // The whole card opens the Focus tab; the pause/resume button keeps its own action.
+    el.innerHTML = `<div class="active-inner clickable ${t.phase !== 'focus' ? 'break' : ''}" data-action="openFocus" role="button" tabindex="0" aria-label="Open the Focus tab">
       <div class="meta"><div class="t">${PHASE_LABEL[t.phase]}${t.status === 'paused' ? ' · paused' : ''}${S.focus.active ? ' · Focus Mode' : ''}</div><div class="s">${tk ? esc(tk.title) : 'No task selected'}${dndActive() ? ' · Do Not Disturb on' : ''}</div></div>
       <div class="big js-active-time">${fmtClock(remaining())}</div>
-      <button class="btn btn-sm btn-on-dark" data-action="${t.status === 'running' ? 'timerPause' : 'timerResume'}" aria-label="${t.status === 'running' ? 'Pause' : 'Resume'}">${icon(t.status === 'running' ? 'i-pause' : 'i-play')}</button>
-      <button class="btn btn-sm btn-on-dark" data-action="openFocus">Open</button></div>`;
+      <button class="btn btn-sm btn-on-dark icon-only" data-action="${t.status === 'running' ? 'timerPause' : 'timerResume'}" aria-label="${t.status === 'running' ? 'Pause' : 'Resume'}">${icon(t.status === 'running' ? 'i-pause' : 'i-play')}</button></div>`;
   }
 
   function renderTasks() {
@@ -1571,7 +1591,7 @@ window.CadenceStore.ready.then(() => {
     $('#taskList').innerHTML = list.map((t) => {
       const sub = t.subtasks; const subDone = sub.filter((s) => s.done).length; const od = isOverdue(t, now);
       const worked = workedMs(t, now);
-      return `<article class="task-card ${t.status}" style="--cat:${catColor(t.category)}">
+      return `<article class="task-card ${t.status}" style="--cat:${catColor(t.category)}" data-action="editTask" data-id="${t.id}" role="button" tabindex="0" aria-label="Edit ${esc(t.title)}">
         <button class="check ${t.status === 'completed' ? 'on' : ''}" data-action="toggleDone" data-id="${t.id}" aria-label="${t.status === 'completed' ? 'Mark as not completed' : 'Mark as completed'}">${icon('i-check')}</button>
         <div class="task-body">
           <div class="task-title">${esc(t.title)}</div>
@@ -1588,11 +1608,10 @@ window.CadenceStore.ready.then(() => {
           </div>
           ${sub.length && t.status !== 'completed' ? `<div class="subtasks-mini">${sub.map((s) => `<label><input type="checkbox" data-action-change="toggleSub" data-id="${t.id}" data-sid="${s.id}" ${s.done ? 'checked' : ''}><span class="${s.done ? 'done' : ''}">${esc(s.text)}</span></label>`).join('')}</div>` : ''}
           <div class="task-actions">
-            ${t.status !== 'completed' ? `<button class="btn btn-soft btn-sm" data-action="openFocusSetup" data-id="${t.id}">${icon('i-focus')}Focus</button>
-            ${t.workingSince ? `<button class="btn btn-ghost btn-sm" data-action="stopWork" data-id="${t.id}">${icon('i-pause')}Stop work</button>` : `<button class="btn btn-ghost btn-sm" data-action="startWork" data-id="${t.id}">${icon('i-play')}${isScheduled(t) && tms(t.start) > now ? 'Start early' : isScheduled(t) && tms(t.end) < now ? 'Keep working' : 'Start work'}</button>`}
-            ${isScheduled(t) || t.due ? `<button class="btn btn-ghost btn-sm" data-action="postpone" data-id="${t.id}">Postpone</button>` : ''}` : ''}
-            <button class="btn btn-ghost btn-sm" data-action="editTask" data-id="${t.id}">${icon('i-edit')}Edit</button>
-            <button class="btn btn-danger-ghost btn-sm" data-action="deleteTask" data-id="${t.id}" aria-label="Delete ${esc(t.title)}">${icon('i-trash')}</button>
+            ${t.status !== 'completed' ? `<button class="btn btn-soft btn-sm icon-only" data-action="openFocusSetup" data-id="${t.id}" aria-label="Focus on ${esc(t.title)}" title="Focus">${icon('i-focus')}</button>
+            ${t.workingSince ? `<button class="btn btn-ghost btn-sm icon-only" data-action="stopWork" data-id="${t.id}" aria-label="Stop work" title="Stop work">${icon('i-stop')}</button>` : (() => { const l = isScheduled(t) && tms(t.start) > now ? 'Start early' : isScheduled(t) && tms(t.end) < now ? 'Keep working' : 'Start work'; return `<button class="btn btn-ghost btn-sm icon-only" data-action="startWork" data-id="${t.id}" aria-label="${l}" title="${l}">${icon('i-play')}</button>`; })()}
+            ${isScheduled(t) || t.due ? `<button class="btn btn-ghost btn-sm icon-only" data-action="postpone" data-id="${t.id}" aria-label="Postpone" title="Postpone">${icon('i-clock')}</button>` : ''}` : ''}
+            <button class="btn btn-danger-ghost btn-sm icon-only" data-action="deleteTask" data-id="${t.id}" aria-label="Delete ${esc(t.title)}" title="Delete">${icon('i-trash')}</button>
           </div>
         </div></article>`;
     }).join('');
@@ -1651,7 +1670,16 @@ window.CadenceStore.ready.then(() => {
       });
       body += '</div></div>';
       $('#calBody').innerHTML = `<div class="timegrid ${v}">${head}${body}</div>`;
-      const sc = $('#tgScroll'); if (sc) sc.scrollTop = (ui.calScrollTop != null ? ui.calScrollTop : Math.max(0, (new Date().getHours() - 1)) * HH);
+      const sc = $('#tgScroll');
+      if (sc) {
+        // Same overall height as this month's grid: weekday row + 5 or 6 rows of days.
+        const first = new Date(cur.getFullYear(), cur.getMonth(), 1); const last = new Date(cur.getFullYear(), cur.getMonth() + 1, 0);
+        const rows = Math.ceil((Math.round((startOfDay(last) - weekStartOf(first)) / DAY) + 1) / 7);
+        const monthH = 26 + rows * 46 - 2;
+        const head = $('#calBody .timegrid-head');
+        sc.style.height = sc.style.maxHeight = `${Math.max(140, monthH - (head ? head.offsetHeight : 0))}px`;
+        sc.scrollTop = (ui.calScrollTop != null ? ui.calScrollTop : Math.max(0, (new Date().getHours() - 1)) * HH);
+      }
       sc.addEventListener('scroll', () => (ui.calScrollTop = sc.scrollTop));
     }
     // agenda for selected date
@@ -1691,8 +1719,8 @@ window.CadenceStore.ready.then(() => {
       ${isBreak && t.status !== 'idle' ? `<div class="break-suggest">${icon('i-moon')}<div><b>Break time — rest away from the screen</b>${esc(randomSuggestion())}${fm && S.focus.dnd ? '<br><span class="small">Do Not Disturb is off during the break.</span>' : ''}</div></div>` : ''}
       ${fm && isBreak ? `<div class="set-row" style="padding:0;border:0"><div class="lbl"><b>Resume Focus Mode after the break?</b><span>We will ask when the break ends; your previous settings are kept.</span></div><div class="ctl">${sw('data-action-change="resumeAfterBreak"', S.focus.resumeAfterBreak)}</div></div>` : ''}
       <div class="row wrap" style="justify-content:center">
-        ${fm ? `<button class="btn btn-ghost" data-action="openFocusSetup">${icon('i-sliders')}Modify focus settings</button><button class="btn btn-danger-ghost" data-action="endFocus">End focus session</button>`
-          : `<button class="btn btn-primary btn-lg" data-action="openFocusSetup">${icon('i-focus')}Set up Focus Mode</button>`}
+        ${fm ? `<button class="btn btn-ghost icon-only" data-action="openFocusSetup" aria-label="Modify focus settings" title="Modify focus settings">${icon('i-sliders')}</button><button class="btn btn-danger-ghost icon-only" data-action="endFocus" aria-label="End focus session" title="End focus session">${icon('i-stop')}</button>`
+          : `<button class="btn btn-soft icon-only big" data-action="openFocusSetup" aria-label="Set up Focus Mode" title="Set up Focus Mode">${icon('i-focus')}</button>`}
       </div>
       ${!fm ? '<p class="small muted" style="text-align:center">Focus Mode adds a task, music, Do Not Disturb and app lock on top of the Pomodoro timer. You can also just press Start to run a plain Pomodoro.</p>' : ''}`;
     $('#focusDevice').hidden = true;
@@ -1954,8 +1982,9 @@ window.CadenceStore.ready.then(() => {
       case 'data': {
         return `
         <div class="set-group"><h3>Backup</h3>
-          <div class="set-row"><button class="btn btn-ghost" style="flex:1" data-action="viewData">View data</button><button class="btn btn-ghost" style="flex:1" data-action="exportData">Back up</button><button class="btn btn-ghost" style="flex:1" data-action="importData">Restore</button></div>
-          <div class="set-row"><span class="small muted">Back up saves everything to a file you can keep in Files, Drive or email. Restore replaces the data on this device with a backup.</span></div>
+          ${row(`<span class="set-ic">${icon('i-search')}</span>View stored data`, 'See everything Cadence keeps on this device', `<button class="btn btn-ghost btn-sm" data-action="viewData">${icon('i-search')}View</button>`)}
+          ${row(`<span class="set-ic">${icon('i-upload')}</span>Back up`, 'Save everything to a file you can keep in Files, Drive or email', `<button class="btn btn-soft btn-sm" data-action="exportData">${icon('i-upload')}Back up</button>`)}
+          ${row(`<span class="set-ic">${icon('i-download')}</span>Restore`, 'Replace the data on this device with a backup file', `<button class="btn btn-ghost btn-sm" data-action="importData">${icon('i-download')}Restore</button>`)}
         </div>
         <div class="set-group"><h3>Danger zone</h3>
           ${row(`<span class="danger-ic">${icon('i-reset')}</span>Clear activity history`, 'Removes sessions, screen-break history and notifications. Keeps tasks and settings.', `<button class="btn btn-danger-ghost btn-sm" data-action="clearHistory">${icon('i-reset')}Clear</button>`)}
@@ -2010,12 +2039,12 @@ window.CadenceStore.ready.then(() => {
   function viewData() {
     flush();
     const keys = Object.keys(DEFAULTS);
-    const m = openModal({ title: 'Stored application data', body: `
-      <table class="data-table">${keys.map((k) => `<tr><td><code>${k}</code></td><td>${((Store.get(NS + k) || '').length / 1024).toFixed(1)} KB</td></tr>`).join('')}</table>
-      <label class="field"><span>Inspect</span><select class="select" id="dataKey">${keys.map((k) => `<option>${k}</option>`).join('')}</select></label>
-      <pre class="json-view" id="dataView"></pre>`, foot: '<button class="btn btn-ghost" data-close>Close</button><button class="btn btn-primary" data-action="exportData">Back up</button>' });
-    const show = () => { const k = $('#dataKey', m.el).value; $('#dataView', m.el).textContent = JSON.stringify(S[k], null, 2); };
-    $('#dataKey', m.el).onchange = show; show();
+    const size = (k) => `${((Store.get(NS + k) || '').length / 1024).toFixed(1)} KB`;
+    // Everything at once: one section per kind of data, each expandable, in a scrollable sheet.
+    openModal({ title: 'Stored application data', size: 'tall', body: `
+      <p class="small muted">Everything Cadence keeps on this device. Tap a section to show or hide it.</p>
+      <div class="data-dump">${keys.map((k, i) => `<details ${i === 0 ? 'open' : ''}><summary><code>${k}</code><span>${size(k)}</span></summary><pre class="json-view">${esc(JSON.stringify(S[k], null, 2))}</pre></details>`).join('')}</div>`,
+      foot: `<button class="btn btn-primary" data-action="exportData">${icon('i-upload')}Back up</button>` });
   }
 
   /* ============ Router, theme & app shell ============ */
@@ -2031,8 +2060,22 @@ window.CadenceStore.ready.then(() => {
     $('#fab').hidden = !['tasks', 'calendar'].includes(ui.screen);
     $$('.nav-item').forEach((n) => { if (n.dataset.screen === ui.screen) n.setAttribute('aria-current', 'page'); else n.removeAttribute('aria-current'); });
   }
+  // A tab you leave goes back to its default view (filters, search, calendar view, edit mode).
+  function resetScreenState(screen) {
+    if (screen === 'home') ui.editingWidgets = false;
+    if (screen === 'tasks') {
+      S.ui.taskView = 'all'; ui.search = ''; ui.filters = { priority: '', category: '', status: '' };
+      const q = $('#taskSearch'); if (q) q.value = '';
+      const f = $('#taskFilters'); if (f) f.hidden = true;
+      const ft = $('#filtersToggle'); if (ft) { ft.setAttribute('aria-expanded', 'false'); ft.classList.remove('btn-soft'); }
+    }
+    if (screen === 'calendar') { S.ui.calView = 'month'; ui.calCursor = new Date(); ui.calSelected = dayKey(new Date()); ui.calScrollTop = null; }
+    if (screen === 'insights') ui.statRange = 'week';
+    save('ui');
+  }
   function go(screen, opts = {}) {
     if (!document.getElementById('screen-' + screen)) screen = 'home';
+    if (ui.screen && ui.screen !== screen) resetScreenState(ui.screen);
     if (screen !== ui.screen) ui.prevScreen = ui.screen;
     ui.screen = screen; S.ui.screen = screen === 'insights' ? (ui.prevScreen || 'home') : screen; save('ui');
     ui.settingsSection = screen === 'settings' ? (opts.section || null) : null;
@@ -2086,7 +2129,9 @@ window.CadenceStore.ready.then(() => {
   });
 
   const A = {
-    newTask: () => openTaskForm(), editTask: (el) => openTaskForm(el.dataset.id), deleteTask: (el) => deleteTask(el.dataset.id),
+    newTask: () => openTaskForm(),
+    // Tapping a card edits the task, except taps on its checklist (those tick subtasks).
+    editTask: (el, e) => { if (e && e.target.closest('.subtasks-mini')) return; openTaskForm(el.dataset.id); }, deleteTask: (el) => deleteTask(el.dataset.id),
     toggleDone: (el) => { const t = getTask(el.dataset.id); if (t) setStatus(t, t.status === 'completed' ? 'pending' : 'completed'); },
     startWork: (el) => { const t = getTask(el.dataset.id); startWork(t, 'manual'); if (t) toast('Tracking time', `${t.title}${isScheduled(t) && tms(t.start) > Date.now() ? ' — started early' : ''}`, 'ok'); renderAll(); },
     stopWork: (el) => { const t = getTask(el.dataset.id); if (t) { stopWork(t, Date.now(), true); toast('Stopped tracking', `${fmtDur(t.actualMs)} worked in total`); } renderAll(); },
@@ -2373,7 +2418,10 @@ window.CadenceStore.ready.then(() => {
   document.addEventListener('visibilitychange', () => {
     tick();
     if (document.visibilityState === 'visible') { S.eye.lastTick = Date.now(); renderAll(); checkScreenRest(); }
-    else { hiddenAt = Date.now(); flush(); scheduleSync(true); }
+    else {
+      hiddenAt = Date.now(); flush(); scheduleSync(true);
+      if (ui.editingWidgets) { ui.editingWidgets = false; if (ui.screen === 'home') renderHome(); } // leaving the app finishes customizing
+    }
   });
 
   // init

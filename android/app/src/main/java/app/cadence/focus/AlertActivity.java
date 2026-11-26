@@ -98,9 +98,17 @@ public class AlertActivity extends AppCompatActivity {
         String kind = intent.getStringExtra(EXTRA_KIND);
         if (kind == null) kind = KIND_FOCUS_END;
         TextView label = findViewById(R.id.a_label), title = findViewById(R.id.a_title), body = findViewById(R.id.a_body), big = findViewById(R.id.a_big);
-        Button primary = findViewById(R.id.a_primary), secondary = findViewById(R.id.a_secondary);
+        Button primary = findViewById(R.id.a_primary), secondary = findViewById(R.id.a_secondary), tertiary = findViewById(R.id.a_tertiary);
         JSONObject t = Store.timer(this);
-        big.setVisibility(View.GONE);
+        boolean screen = KIND_SCREEN.equals(kind);
+        // The screen break is the same guided full-screen break as in the app.
+        findViewById(R.id.a_root).setBackgroundResource(screen ? R.drawable.screen_break_bg : R.color.ic_launcher_background);
+        findViewById(R.id.a_logo).setVisibility(screen ? View.GONE : View.VISIBLE);
+        findViewById(R.id.a_breath_box).setVisibility(screen ? View.VISIBLE : View.GONE);
+        findViewById(R.id.a_progress).setVisibility(screen ? View.VISIBLE : View.GONE);
+        findViewById(R.id.a_steps).setVisibility(screen ? View.VISIBLE : View.GONE);
+        tertiary.setVisibility(screen ? View.VISIBLE : View.GONE);
+        stopBreathing();
         switch (kind) {
             case KIND_SCREEN: {
                 JSONObject e = Store.snapshot(this).optJSONObject("eye");
@@ -108,19 +116,30 @@ public class AlertActivity extends AppCompatActivity {
                 int snooze = e != null ? e.optInt("postponeMin", 5) : 5;
                 label.setText(R.string.alert_screen_label);
                 title.setText(R.string.alert_screen_title);
-                body.setText(R.string.alert_screen_body);
-                big.setVisibility(View.VISIBLE);
+                body.setText(TimerEngine.running(t) ? "Your focus timer keeps running. This is a screen break, separate from Pomodoro breaks."
+                    : "This is a screen break, separate from Pomodoro breaks.");
                 if (eyeEndAt == 0) eyeEndAt = System.currentTimeMillis() + secs * 1000L;
+                final long total = secs * 1000L;
+                TextView breath = findViewById(R.id.a_breath);
+                android.widget.ProgressBar bar = findViewById(R.id.a_progress);
+                startBreathing();
                 long left = Math.max(0, eyeEndAt - System.currentTimeMillis());
-                big.setText(clock(left));
-                countdown = new CountDownTimer(left, 250) {
-                    @Override public void onTick(long left) { big.setText(clock(left)); }
-                    @Override public void onFinish() { big.setText(R.string.alert_screen_done); primary.setText(R.string.alert_done); }
+                countdown = new CountDownTimer(left, 200) {
+                    @Override public void onTick(long l) {
+                        big.setText(clock(l));
+                        bar.setProgress((int) (1000 * (total - l) / Math.max(1, total)));
+                        long elapsed = total - l;
+                        breath.setText((elapsed % 8000) < 4000 ? R.string.alert_breathe_in : R.string.alert_breathe_out);
+                    }
+                    // Like the in-app break: it completes on its own when the countdown ends.
+                    @Override public void onFinish() { bar.setProgress(1000); act("eyeDone"); }
                 }.start();
-                primary.setText(R.string.alert_done);
-                secondary.setText(getString(R.string.alert_snooze, snooze));
+                big.setText(clock(left));
+                primary.setText(R.string.alert_complete);
+                secondary.setText(getString(R.string.alert_postpone, snooze));
                 primary.setOnClickListener(v -> act("eyeDone"));
                 secondary.setOnClickListener(v -> act("eyeSnooze"));
+                tertiary.setOnClickListener(v -> act("eyeSkip"));
                 break;
             }
             case KIND_BREAK_END:
@@ -151,6 +170,29 @@ public class AlertActivity extends AppCompatActivity {
         });
     }
 
+    private android.animation.AnimatorSet breathing;
+
+    /** The two rings grow and shrink over 8 seconds: breathe in, breathe out. */
+    private void startBreathing() {
+        View outer = findViewById(R.id.a_ring_outer), inner = findViewById(R.id.a_ring_inner);
+        breathing = new android.animation.AnimatorSet();
+        java.util.List<android.animation.Animator> parts = new java.util.ArrayList<>();
+        for (View v : new View[] { outer, inner }) {
+            for (String prop : new String[] { "scaleX", "scaleY" }) {
+                android.animation.ObjectAnimator o = android.animation.ObjectAnimator.ofFloat(v, prop, 0.82f, 1f);
+                o.setDuration(4000); o.setRepeatCount(android.animation.ValueAnimator.INFINITE);
+                o.setRepeatMode(android.animation.ValueAnimator.REVERSE);
+                o.setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator());
+                if (v == inner) o.setStartDelay(250);
+                parts.add(o);
+            }
+        }
+        breathing.playTogether(parts);
+        breathing.start();
+    }
+
+    private void stopBreathing() { if (breathing != null) { breathing.cancel(); breathing = null; } }
+
     private void act(String cmd) {
         if (cmd != null) ActionReceiver.handle(getApplicationContext(), cmd, null);
         Notifier.cancel(this, Notifier.ID_PHASE);
@@ -161,6 +203,7 @@ public class AlertActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         if (countdown != null) countdown.cancel();
+        stopBreathing();
         if (ringtone != null) ringtone.stop();
         super.onDestroy();
     }

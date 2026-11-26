@@ -387,6 +387,7 @@
   const state = { track: null, playing: false, elapsedBefore: 0, startedAt: 0, parts: [], bus: null, endTimer: null };
   // Tracks the user uploaded: played from the file with an <audio> element instead of being synthesized.
   const custom = new Map();
+  let extraCats = []; // categories the user created: [{ id, name }]
   let fileEl = null;
   let masterVol = 0.6;
   function fileAudio() {
@@ -398,7 +399,7 @@
 
   function findTrack(id) {
     if (custom.has(id)) {
-      const t = custom.get(id); const c = LIB.find((x) => x.id === t.category);
+      const t = custom.get(id); const c = LIB.find((x) => x.id === t.category) || extraCats.find((x) => x.id === t.category);
       return Object.assign({ category: c ? c.id : t.category, categoryName: c ? c.name : 'My music', file: true }, t);
     }
     for (const c of LIB) for (const t of c.tracks) if (t.id === id) return Object.assign({ category: c.id, categoryName: c.name }, t);
@@ -438,8 +439,10 @@
   }
 
   const api = {
+    /** Registers the user's own categories: [{ id, name }]. */
+    setCategories(list) { extraCats = (list || []).filter((c) => c && c.id && c.name); },
     get library() {
-      return LIB.map((c) => ({ id: c.id, name: c.name, tracks: c.tracks.map((t) => ({ id: t.id, title: t.title, length: t.length, category: c.id, categoryName: c.name }))
+      return LIB.concat(extraCats.map((c) => ({ id: c.id, name: c.name, tracks: [] }))).map((c) => ({ id: c.id, name: c.name, tracks: c.tracks.map((t) => ({ id: t.id, title: t.title, length: t.length, category: c.id, categoryName: c.name }))
         .concat(Array.from(custom.values()).filter((t) => t.category === c.id).map((t) => ({ id: t.id, title: t.title, length: t.length, category: c.id, categoryName: c.name, file: true }))) }));
     },
     /** Registers uploaded tracks: [{ id, title, category, src, length }]. */

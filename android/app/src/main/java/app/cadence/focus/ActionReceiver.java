@@ -71,6 +71,10 @@ public class ActionReceiver extends BroadcastReceiver {
                     Notifier.cancel(c, Notifier.ID_EYE);
                     break;
                 }
+                case "eyeSkip":
+                    Store.queue(c, Store.obj("type", "eye", "action", "skipped", "at", now));
+                    Notifier.cancel(c, Notifier.ID_EYE);
+                    break;
                 case "eyeSnooze": {
                     JSONObject e = snap.optJSONObject("eye");
                     int min = e != null ? e.optInt("postponeMin", 5) : 5;
