@@ -41,6 +41,11 @@ public class AlertActivity extends AppCompatActivity {
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
         }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        // The background runs behind the status and navigation bars; the content is padded clear of them.
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+        getWindow().setStatusBarColor(android.graphics.Color.TRANSPARENT);
+        getWindow().setNavigationBarColor(android.graphics.Color.TRANSPARENT);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) getWindow().setNavigationBarContrastEnforced(false);
         setContentView(R.layout.activity_alert);
         if (savedInstanceState != null) eyeEndAt = savedInstanceState.getLong("eyeEndAt", 0);
         bind(getIntent());
@@ -105,8 +110,9 @@ public class AlertActivity extends AppCompatActivity {
         findViewById(R.id.a_root).setBackgroundResource(screen ? R.drawable.screen_break_bg : R.color.ic_launcher_background);
         findViewById(R.id.a_logo).setVisibility(screen ? View.GONE : View.VISIBLE);
         findViewById(R.id.a_breath_box).setVisibility(screen ? View.VISIBLE : View.GONE);
-        findViewById(R.id.a_progress).setVisibility(screen ? View.VISIBLE : View.GONE);
+        findViewById(R.id.a_progress).setVisibility(View.GONE); // no progress line: the countdown shows the time left
         findViewById(R.id.a_steps).setVisibility(screen ? View.VISIBLE : View.GONE);
+        body.setVisibility(screen ? View.GONE : View.VISIBLE);
         tertiary.setVisibility(screen ? View.VISIBLE : View.GONE);
         stopBreathing();
         switch (kind) {
@@ -116,8 +122,7 @@ public class AlertActivity extends AppCompatActivity {
                 int snooze = e != null ? e.optInt("postponeMin", 5) : 5;
                 label.setText(R.string.alert_screen_label);
                 title.setText(R.string.alert_screen_title);
-                body.setText(TimerEngine.running(t) ? "Your focus timer keeps running. This is a screen break, separate from Pomodoro breaks."
-                    : "This is a screen break, separate from Pomodoro breaks.");
+                body.setText("");
                 if (eyeEndAt == 0) eyeEndAt = System.currentTimeMillis() + secs * 1000L;
                 final long total = secs * 1000L;
                 TextView breath = findViewById(R.id.a_breath);

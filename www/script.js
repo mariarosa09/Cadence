@@ -1213,7 +1213,6 @@ window.CadenceStore.ready.then(() => {
       <p class="eyebrow" style="color:#9FD3CB">Screen break</p>
       <h2 id="eyeTitle">Rest your eyes</h2>
       <div class="breath" aria-hidden="true"><div class="cd js-eye-cd"></div><div class="phase js-eye-phase">Breathe in</div></div>
-      <div class="eye-progress" style="margin-top:22px"><span class="js-eye-bar"></span></div>
       <ol class="eye-steps">
         <li><b>1</b>Look away from the screen.</li>
         <li><b>2</b>Focus on something about 20 feet (6 m) away.</li>
@@ -1305,8 +1304,9 @@ window.CadenceStore.ready.then(() => {
     Device.deleteAudio(u.path); save('music'); registerUploads(); renderMusic();
     if (ui.screen === 'settings') renderSettingsKeepScroll();
   }
-  const CAT_ART = { lofi: 'linear-gradient(135deg,#d397fa,#8364e8)', ambient: 'linear-gradient(135deg,#8FB8F0,#6A4BD8)', rain: 'linear-gradient(135deg,#7EA6E0,#4F5FC4)', nature: 'linear-gradient(135deg,#8DD3B0,#3FA07A)', white: 'linear-gradient(135deg,#B9B2CC,#6B6383)', instrumental: 'linear-gradient(135deg,#F2B37A,#C46BD6)', piano: 'linear-gradient(135deg,#4A3F6B,#1D1730)', cafe: 'linear-gradient(135deg,#D9A273,#8A5A3C)', ocean: 'linear-gradient(135deg,#6FC3E0,#2F6FB8)', forest: 'linear-gradient(135deg,#7CC48F,#2E6B45)', fav: 'linear-gradient(135deg,#F59AC0,#d397fa)' };
+  const CAT_ART = { all: 'linear-gradient(135deg,#d397fa,#8364e8)', lofi: 'linear-gradient(135deg,#d397fa,#8364e8)', ambient: 'linear-gradient(135deg,#8FB8F0,#6A4BD8)', rain: 'linear-gradient(135deg,#7EA6E0,#4F5FC4)', nature: 'linear-gradient(135deg,#8DD3B0,#3FA07A)', white: 'linear-gradient(135deg,#B9B2CC,#6B6383)', instrumental: 'linear-gradient(135deg,#F2B37A,#C46BD6)', piano: 'linear-gradient(135deg,#4A3F6B,#1D1730)', cafe: 'linear-gradient(135deg,#D9A273,#8A5A3C)', ocean: 'linear-gradient(135deg,#6FC3E0,#2F6FB8)', forest: 'linear-gradient(135deg,#7CC48F,#2E6B45)', fav: 'linear-gradient(135deg,#F59AC0,#d397fa)' };
   function musicList(cat) {
+    if (cat === 'all') return CadenceAudio.library.flatMap((c) => c.tracks); // every track, built-in and yours
     if (cat === 'fav') return S.music.favorites.map((id) => CadenceAudio.findTrack(id)).filter(Boolean);
     const c = CadenceAudio.library.find((x) => x.id === cat); return c ? c.tracks : [];
   }
@@ -1346,7 +1346,7 @@ window.CadenceStore.ready.then(() => {
     const cur = CadenceAudio.current || CadenceAudio.findTrack(S.music.trackId);
     const playing = CadenceAudio.playing; const cat = S.music.category;
     const list = musicList(cat);
-    const cats = [['fav', '♥ Favorites']].concat(CadenceAudio.library.map((c) => [c.id, c.name]));
+    const cats = [['all', 'All'], ['fav', '♥ Favorites']].concat(CadenceAudio.library.map((c) => [c.id, c.name]));
     if (!CadenceAudio.supported) return emptyState('i-music', 'Audio not available', 'Focus music is not available on this device.');
     return `<div class="player">
       <div class="player-now">
@@ -1365,7 +1365,7 @@ window.CadenceStore.ready.then(() => {
       <div class="prog-row">${icon('i-volume')}<input type="range" class="range js-mp-vol" min="0" max="100" value="${Math.round(S.music.volume * 100)}" aria-label="Volume"><span class="js-mp-volv">${Math.round(S.music.volume * 100)}%</span></div>
       ${compact ? `<label class="field"><span class="sr-only">Category</span><select class="select" data-action-change="musicCat">${cats.map(([v, l]) => `<option value="${v}" ${cat === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`
         : `<div class="cat-scroll">${cats.map(([v, l]) => `<button class="pill" data-action="musicCat" data-id="${v}" aria-pressed="${cat === v}">${l}</button>`).join('')}</div>
-      <div class="track-list">${list.length ? list.map((t) => `<div class="track-row"><button class="track ${cur && cur.id === t.id ? 'active' : ''}" data-action="musicPlay" data-id="${t.id}"><span class="tn">${esc(t.title)}${t.file ? ' <span class="chip">yours</span>' : ''}</span>${S.music.favorites.includes(t.id) ? `<span class="fav">${icon('i-heart-fill')}</span>` : ''}<span class="tl">${t.length ? fmtSec(t.length) : ''}</span></button>${t.file ? `<button class="icon-btn sm" data-action="removeUpload" data-id="${t.id}" aria-label="Remove ${esc(t.title)}">${icon('i-trash')}</button>` : ''}</div>`).join('') : `<p class="small muted" style="padding:8px">${cat === 'fav' ? 'No favorites yet — tap the heart on a track you like.' : 'No tracks here yet — tap Upload to add your own music.'}</p>`}</div>`}
+      <div class="track-list">${list.length ? list.map((t) => `<div class="track-row"><button class="track ${cur && cur.id === t.id ? 'active' : ''}" data-action="musicPlay" data-id="${t.id}"><span class="tn">${esc(t.title)}${t.file ? ' <span class="chip">yours</span>' : ''}${cat === 'all' ? `<span class="tcat">${esc(t.categoryName)}</span>` : ''}</span>${S.music.favorites.includes(t.id) ? `<span class="fav">${icon('i-heart-fill')}</span>` : ''}<span class="tl">${t.length ? fmtSec(t.length) : ''}</span></button>${t.file ? `<button class="icon-btn sm" data-action="removeUpload" data-id="${t.id}" aria-label="Remove ${esc(t.title)}">${icon('i-trash')}</button>` : ''}</div>`).join('') : `<p class="small muted" style="padding:8px">${cat === 'fav' ? 'No favorites yet — tap the heart on a track you like.' : 'No tracks here yet — tap Upload to add your own music.'}</p>`}</div>`}
       <p class="tiny muted">Built-in tracks are generated on your device. Music keeps playing when you leave the app, with controls in your notifications.</p>
     </div>`;
   }

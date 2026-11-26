@@ -78,4 +78,8 @@
     <string name="alert_postpone">Postpone %1$d min</string>
     <string name="alert_breathe_in">Breathe in</string>
     <string name="alert_breathe_out">Breathe out</string>
+    <string name="alert_step_1">Look away from the screen.</string>
+    <string name="alert_step_2">Focus on something about 20 feet (6 m) away.</string>
+    <string name="alert_step_3">Blink slowly and relax your eyes.</string>
+    <string name="alert_step_4">Stretch your neck and shoulders.</string>
 </resources>

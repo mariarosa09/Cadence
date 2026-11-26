@@ -840,3 +840,5 @@ body.mini-on .fab { bottom: calc(var(--nav-h) + var(--safe-area-inset-bottom, en
 .timer-row.compact .btn.icon-only.big { width: 52px; min-width: 52px; height: 52px; min-height: 52px; }
 .timer-row.compact .btn.icon-only.big svg { width: 24px; height: 24px; }
 .timer-row.compact .timer-sep { height: 24px; margin: 0 2px; }
+
+.track .tn .tcat { display: block; font-size: 12px; font-weight: 500; color: var(--muted); }
